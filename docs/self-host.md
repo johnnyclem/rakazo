@@ -137,6 +137,8 @@ Compose bot homes mount only their own subdirectory of the application volume us
   and alerts.
 - [Audit log](./self-host-audit-log.md): who did what in each organization, retention, export
   and SIEM forwarding.
+- [Record ledger](./self-host-record-ledger.md): a sealed, append-only copy of each bot's memory
+  and actions, kept outside the deployment.
 - [Apps and clients](./self-host-clients.md): mobile and desktop apps, push, client updates and web
   page settings.
 - [Billing](./self-host-billing.md): optional Stripe plans and model credits.

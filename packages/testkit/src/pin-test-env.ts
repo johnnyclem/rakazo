@@ -35,6 +35,8 @@ if (!process.env.VERIFY_PROVIDERS) {
   delete process.env.MEDIA_GENERATION_API_KEY;
   process.env.PAID_SERVICES_PROVIDER = "disabled";
   delete process.env.PAID_SERVICES_API_KEY;
+  process.env.RECORD_LEDGER_PROVIDER = "disabled";
+  delete process.env.RECORD_LEDGER_TOKEN;
   delete process.env.CURSOR_API_KEY;
   process.env.WAKEUP_DRIVER = "memory";
   delete process.env.COMPOSIO_API_KEY;

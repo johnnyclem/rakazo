@@ -12,6 +12,7 @@ export * from "./messaging-installations.js";
 export * from "./model-errors.js";
 export * from "./paid-services.js";
 export * from "./payments.js";
+export * from "./record-ledger.js";
 export * from "./registry.js";
 export * from "./sandbox-errors.js";
 export * from "./secret-errors.js";

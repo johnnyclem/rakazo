@@ -1,0 +1,131 @@
+import { RecordLedgerUnavailable } from "@rakazo/adapter-kit";
+import { describe, expect, it } from "vitest";
+import { AgentVaultRecordLedger } from "./agentvault-record-ledger.js";
+import { createRecordLedgerProvider } from "./record-ledger-factory.js";
+
+const signal = new AbortController().signal;
+const HASH = "a".repeat(64);
+const entries = [
+  {
+    seq: 1,
+    kind: "memory.revision",
+    occurredAt: new Date("2026-01-02T03:04:05.678Z"),
+    payload: new Uint8Array([0xfb, 0xff, 0x00]),
+  },
+];
+
+function ledger(answer: (url: string, init: RequestInit) => Response | Promise<Response>) {
+  return new AgentVaultRecordLedger({
+    baseUrl: "https://ledger.example.test/ignored/path",
+    token: "fake-token",
+    fetch: (async (input: string | URL | Request, init?: RequestInit) =>
+      answer(String(input), init ?? {})) as typeof fetch,
+  });
+}
+
+async function unavailable(attempt: Promise<unknown>): Promise<RecordLedgerUnavailable> {
+  const error = await attempt.then(
+    () => undefined,
+    (thrown: unknown) => thrown,
+  );
+  expect(error).toBeInstanceOf(RecordLedgerUnavailable);
+  return error as RecordLedgerUnavailable;
+}
+
+describe("AgentVaultRecordLedger", () => {
+  it("posts sealed entries to the stream with the token, and never follows a redirect", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const head = await ledger((url, init) => {
+      seen.push({ url, init });
+      return Response.json({ head: { seq: 1, hash: HASH }, appended: 1 });
+    }).append({ stream: "stream1", entries }, signal);
+
+    expect(head).toEqual({ seq: 1, digest: HASH });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe("https://ledger.example.test/v1/streams/stream1/entries");
+    expect(seen[0]!.init).toMatchObject({ method: "POST", redirect: "error", signal });
+    expect(seen[0]!.init.headers).toMatchObject({ authorization: "Bearer fake-token" });
+    expect(JSON.parse(String(seen[0]!.init.body))).toEqual({
+      entries: [
+        { seq: 1, kind: "memory.revision", at: "2026-01-02T03:04:05.678Z", payload: "-_8A" },
+      ],
+    });
+  });
+
+  it("reports a refused token, a rejected request and an outage apart", async () => {
+    const answers: Array<[Response | Error, RecordLedgerUnavailable["reason"]]> = [
+      [Response.json({ error: "unauthorized" }, { status: 401 }), "credential"],
+      [Response.json({ error: "invalid" }, { status: 400 }), "rejected"],
+      [Response.json({ error: "too_large" }, { status: 413 }), "rejected"],
+      [Response.json({ error: "internal" }, { status: 500 }), "unavailable"],
+      [new Response("<html>bad gateway</html>", { status: 502 }), "unavailable"],
+      [new TypeError("fetch failed"), "unavailable"],
+    ];
+    for (const [answer, reason] of answers) {
+      const attempt = ledger(() => {
+        if (answer instanceof Error) throw answer;
+        return answer;
+      }).append({ stream: "stream1", entries }, signal);
+      expect((await unavailable(attempt)).reason).toBe(reason);
+    }
+  });
+
+  it("does not take an answer it cannot read as an acknowledgement", async () => {
+    for (const body of ["not json", "{}", JSON.stringify({ head: { seq: 1, hash: "short" } })]) {
+      await unavailable(
+        ledger(() => new Response(body)).append({ stream: "stream1", entries }, signal),
+      );
+    }
+    // A 409 that names no known refusal is an outage, not a conflict.
+    await unavailable(
+      ledger(() => Response.json({ error: "busy" }, { status: 409 })).append(
+        { stream: "stream1", entries },
+        signal,
+      ),
+    );
+  });
+
+  it("refuses a URL that would send the token in the clear", () => {
+    const create = (baseUrl: string) =>
+      new AgentVaultRecordLedger({ baseUrl, token: "fake-token" });
+    expect(() => create("http://ledger.example.test")).toThrow(/https/);
+    expect(() => create("not a url")).toThrow(/https/);
+    expect(() => create("http://127.0.0.1:8787")).not.toThrow();
+    expect(() => create("http://localhost:8787")).not.toThrow();
+    expect(
+      () => new AgentVaultRecordLedger({ baseUrl: "https://ledger.example.test", token: "" }),
+    ).toThrow(/token/);
+  });
+});
+
+describe("createRecordLedgerProvider", () => {
+  it("is off unless a provider is named", () => {
+    expect(createRecordLedgerProvider({})).toBeUndefined();
+    expect(createRecordLedgerProvider({ RECORD_LEDGER_PROVIDER: "disabled" })).toBeUndefined();
+    // Connection settings alone do not turn it on.
+    expect(
+      createRecordLedgerProvider({
+        RECORD_LEDGER_URL: "https://ledger.example.test",
+        RECORD_LEDGER_TOKEN: "fake-token",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("builds the named provider from the connection settings", () => {
+    const provider = createRecordLedgerProvider({
+      RECORD_LEDGER_PROVIDER: " AgentVault ",
+      RECORD_LEDGER_URL: "https://ledger.example.test",
+      RECORD_LEDGER_TOKEN: "fake-token",
+    });
+    expect(provider?.describe()).toMatchObject({ id: "agentvault", contractVersion: "1" });
+  });
+
+  it("fails at startup on a half-configured or unknown provider", () => {
+    expect(() => createRecordLedgerProvider({ RECORD_LEDGER_PROVIDER: "agentvault" })).toThrow(
+      /RECORD_LEDGER_URL and RECORD_LEDGER_TOKEN/,
+    );
+    expect(() => createRecordLedgerProvider({ RECORD_LEDGER_PROVIDER: "nope" })).toThrow(
+      /Unknown record ledger provider/,
+    );
+  });
+});

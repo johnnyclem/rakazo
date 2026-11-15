@@ -42,6 +42,8 @@ import {
   pipedreamConfigFromEnv,
 } from "./pipedream-connector.js";
 import { reconcilePurchases } from "./purchase-poll.js";
+import { createRecordLedgerReconciler } from "./record-ledger.js";
+import { createRecordLedgerProvider } from "./record-ledger-factory.js";
 import { createStrategicInitiativeReconciler } from "./strategic-initiative.js";
 import { T3CodeConnections } from "./t3code-connections.js";
 import { TeamChat } from "./team-chat.js";
@@ -317,6 +319,7 @@ export function createRunReconciler(
 ) {
   const { prisma, jobs, cloudAgent, paymentWallet, mediaGeneration } = deps;
   const { messagingDelivery, teamChat } = chat;
+  const recordLedger = createRecordLedgerProvider();
   return createJobReconciler({
     prisma,
     jobs,
@@ -349,6 +352,9 @@ export function createRunReconciler(
       securityEventRetentionDays(),
     ),
     reconcileAuditLog: createAuditLogReconciler(prisma, auditLogConfig()),
+    reconcileRecordLedger: recordLedger
+      ? createRecordLedgerReconciler(prisma, recordLedger)
+      : undefined,
     reconcileIdleComputers: createIdleComputerSweeper({ prisma, jobs }),
   });
 }

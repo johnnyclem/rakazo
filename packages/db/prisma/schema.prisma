@@ -665,6 +665,7 @@ model Space {
   connections                 Connection[]
   capabilities                CapabilityInstall[]
   memoryDocuments             MemoryDocument[]
+  recordLedgerStreams         RecordLedgerStream[]
   agentHomes                  AgentHome[]
   browserProfiles             BrowserProfile[]
   artifacts                   Artifact[]
@@ -861,6 +862,60 @@ model AuditEventForwarding {
   @@map("audit_event_forwarding")
 }
 
+/// One append-only record per bot, and one per Space for what no single bot owns. Rows are
+/// sealed into it in order and copied to the deployment's record ledger.
+model RecordLedgerStream {
+  id            String              @id
+  /// `bot:<bot id>` or `space:<space id>`: what the stream records.
+  subject       String              @unique
+  spaceId       String
+  space         Space               @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  botId         String?             @unique
+  bot           Bot?                @relation(fields: [botId], references: [id], onDelete: Cascade)
+  /// Entries sealed so far; the next one is `sealedSeq + 1`.
+  sealedSeq     Int                 @default(0)
+  /// Entries the ledger has acknowledged, and its own digest of the stream at that point.
+  shippedSeq    Int                 @default(0)
+  shippedDigest String?
+  shippedAt     DateTime?
+  /// Set when the ledger refuses this stream's entries; shipping stops until cleared.
+  stoppedAt     DateTime?
+  createdAt     DateTime            @default(now())
+  entries       RecordLedgerEntry[]
+
+  @@index([spaceId])
+  @@map("record_ledger_streams")
+}
+
+model RecordLedgerEntry {
+  id         String             @id
+  streamId   String
+  stream     RecordLedgerStream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  seq        Int
+  kind       String
+  /// The row this entry records, so no row is sealed twice.
+  sourceId   String
+  occurredAt DateTime
+  /// Ciphertext under the Space's content key: the only form of the record that leaves the database.
+  payload    String
+  createdAt  DateTime           @default(now())
+
+  @@unique([streamId, seq])
+  @@unique([kind, sourceId])
+  @@map("record_ledger_entries")
+}
+
+/// How far sealing has read each source table.
+model RecordLedgerCursor {
+  /// `memory_revisions` or `audit_events`.
+  source        String   @id
+  lastCreatedAt DateTime
+  lastId        String
+  updatedAt     DateTime @updatedAt
+
+  @@map("record_ledger_cursors")
+}
+
 model UserModelCredential {
   id          String                 @id @default(cuid())
   userId      String
@@ -1019,6 +1074,7 @@ model Bot {
   scratchpadItems   ScratchpadItem[]
   taughtSkills      TaughtSkill[]
   memoryDocuments   MemoryDocument[]
+  recordLedgerStream RecordLedgerStream?
   agentHome         AgentHome?
   browserProfile    BrowserProfile?
   artifacts         Artifact[]
@@ -1777,6 +1833,7 @@ model MemoryRevision {
   createdAt      DateTime       @default(now())
 
   @@unique([documentId, revision])
+  @@index([createdAt, id])
   @@map("memory_revisions")
 }
 
