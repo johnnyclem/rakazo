@@ -1,7 +1,8 @@
 # Record ledger
 
 Keep a second copy of what each bot remembered and did, outside this deployment, in a store that
-makes rewriting it detectable. It is off until you configure a ledger.
+makes rewriting it detectable. If the deployment is lost, the ledger and your master keys are
+enough to get a bot's memory back. It is off until you configure a ledger.
 
 The copy is sealed before it leaves: the ledger holds ciphertext it cannot read.
 
@@ -42,12 +43,18 @@ interval and how to verify a stream.
 
 ## How it works
 
+- **A stream opens itself.** Its first entries are the Space key, wrapped by a master key and sent
+  as it is stored in `space_keys`, and a sealed header saying whether the stream is for a bot or a
+  Space, and its name as it was then. A new key is announced the same way when the Space's key rotates. That is
+  what lets a stream be read with the ledger and the master keys alone.
 - **Sealing.** Each record is encrypted with its Space's
-  [content key](./content-encryption.md#how-it-works) (AES-256-GCM), bound to its entry and
-  stream, whatever `CONTENT_ENCRYPTION` says. Only the record's kind, its time and its position
-  in the stream are sent in the clear. Stream names are random ids, not bot or Space ids.
+  [content key](./content-encryption.md#how-it-works) (AES-256-GCM), whatever `CONTENT_ENCRYPTION`
+  says, and bound to its stream and position, so an entry moved or copied elsewhere does not open.
+  Only the record's kind, its time and its position in the stream are sent in the clear. Stream
+  names are random ids, not bot or Space ids.
 - **Order.** Entries are numbered from 1 within a stream. One sealer runs at a time across all
-  instances, so a position is never handed out twice.
+  instances, so a position is never handed out twice, and a row already in a stream is never
+  sealed again.
 - **Shipping.** Sealed entries stay in Postgres (`record_ledger_entries`) and are sent in
   order. Sends are idempotent: an entry the ledger already holds is accepted again, so a lost
   answer is safe to retry. While the ledger is unreachable, sealing continues and shipping
@@ -57,7 +64,48 @@ interval and how to verify a stream.
 - **A record too large for the ledger** (256 KiB sealed, for the gateway) is recorded without
   its content, with the content's size and SHA-256 instead. One that still does not fit keeps
   its place in the stream as a stub holding only its id, time, size and SHA-256, so a single
-  large row never holds up the ones after it.
+  large row never holds up the ones after it. Restoring cannot bring back content a stub left out.
+
+## Restore
+
+`record-ledger` reads a stream back from the ledger and puts a bot's memory into the database. It
+needs the ledger and the master keys that sealed the stream (`ENCRYPTION_MASTER_KEYS` or
+`ENCRYPTION_KEY`, or your key manager), and for `restore`, the database. **Keep the master keys
+somewhere that survives losing the server**: without them a ledger cannot be opened, and with them
+anyone holding the ledger can read it.
+
+```sh
+docker compose -f docker-compose.images.yml exec api pnpm --filter @rakazo/api record-ledger list
+```
+
+- `list` shows each stream the ledger holds, the bot or Space it is for, and its length. It needs
+  no database. A stream your keys do not open is listed with the reason.
+- `export <stream> [--output <file>]` writes a stream's records, decrypted, as JSON lines: every
+  saved version of every memory, and every audit event, with their original times. It needs no
+  database. Read it as plaintext: the file is created owner-only, and an existing file is not
+  overwritten.
+- `restore <stream> [--into-bot <id>] [--skip-unreadable] [--dry-run] [--json]` puts the stream's
+  records back in the database. Run `--dry-run` first. Stop the API and worker while it runs, as
+  for any restore.
+
+**After losing the deployment.** Set up a new one with the same master keys, sign in, create a bot,
+and run `restore <stream> --into-bot <bot id>`. The old bot's memory comes back in the new bot, with
+its history, as new revisions: the new bot's own stream then records them, under its Space's key,
+and they carry the time of the restore (the original times stay in the old stream; `export` shows
+them). Audit events are not copied, since they are the old organization's record. Accounts, Spaces
+and bots are not recreated.
+
+**After restoring Postgres from an older backup.** Restore the backup, then run `restore <stream>`
+for each stream `list` shows, before starting the API and worker. Memory and audit events the
+backup lacks come back under their own ids, and the database's record of the stream is re-linked to
+the ledger, so sealing carries on after the last entry. Shared memory and a Space's audit trail
+(`space:` streams) restore only in place.
+
+Restore adds what is missing and never changes what is there. A revision the database holds
+differently is kept as it is and reported, with its document left alone, and the command exits
+non-zero. A stream with an entry that does not open (altered, moved, or sealed under a key you no
+longer have) restores nothing, and says which entry; `--skip-unreadable` restores the rest, but
+cannot re-link the stream. Running it again changes nothing.
 
 ## When a stream stops
 
@@ -65,10 +113,11 @@ A stream stops shipping when the ledger already holds a different entry at one o
 or rejects its entries as malformed. `record.ledger.stopped` is logged with the stream, the
 position and the reason. Other streams continue, and the stopped stream keeps sealing.
 
-The usual cause is restoring Postgres from a backup older than the ledger: the ledger then holds
-entries the database no longer has, and new activity takes the same positions. Those entries in
-the ledger are the only remaining copy of what the restore lost. Reading them back into the
-database is not automated yet.
+The usual cause is restoring Postgres from a backup older than the ledger and starting services
+before restoring the ledger: the ledger then holds entries the database no longer has, and new
+activity takes the same positions. Restore the stream as above: it brings back what the ledger
+holds. If the database sealed entries of its own in the meantime they differ from the ledger's, so
+the stream is not re-linked, and a warning says from which entry.
 
 To retry a stream after resolving the cause:
 
@@ -76,14 +125,19 @@ To retry a stream after resolving the cause:
 UPDATE record_ledger_streams SET "stoppedAt" = NULL WHERE id = '<stream id>';
 ```
 
-## Deleting
+## Privacy and deleting
 
-A ledger is append-only, so nothing sent to it is removed.
+A ledger is append-only, so nothing sent to it is removed. The ledger, and anyone who can read it,
+holds ciphertext and your wrapped Space keys. **The master key opens all of it**: choose a random
+one (`openssl rand -hex 32` in `ENCRYPTION_MASTER_KEYS`), not a passphrase, and treat it as the key
+to the history. Where a ledger publishes what it holds (a canister anchored with its entries is
+readable by anyone, permanently), a master key that later leaks opens that history for good.
 
-- Deleting a Space destroys its content key. Its entries in the ledger stay, permanently
-  unreadable.
+- Deleting a Space destroys its key in Postgres, but **not** in the ledger: the stream carries it,
+  wrapped. Its entries stay readable to anyone with the master key. Only destroying the master key,
+  which makes all your other data unreadable too, makes a ledger unreadable.
 - Deleting a bot removes its stream and sealed entries from Postgres. Its entries in the ledger
-  stay readable with the Space's key for as long as the Space exists.
+  stay.
 - Deleting one memory note, or the audit log's retention pruning, does not reach entries already
   sealed.
 
@@ -91,5 +145,7 @@ Consider this before turning the ledger on where people expect a deleted note to
 
 ## Not yet
 
-Nothing in the apps shows a bot's ledger status, and a bot cannot be restored from its ledger.
-The Space's key stays with the deployment: there is no export to a key the Space's owner holds.
+Nothing in the apps shows a bot's ledger status, and restoring is an operator command. A Space's
+key is wrapped by the deployment's master key: there is no key held by the Space's owner alone.
+Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
+is noticed only when the database survives to compare (it warns), or by verifying the anchor.

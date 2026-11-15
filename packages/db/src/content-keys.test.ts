@@ -127,6 +127,28 @@ describe("ContentKeyRing", () => {
     expect(Buffer.from((await other.byId(v1.id)).key)).toEqual(Buffer.from(v1.key));
   });
 
+  it("hands out a key version still wrapped, which only its master key opens", async () => {
+    const store = memoryStore();
+    const provider = new LocalKeyProvider([master("a")]);
+    const ring = new ContentKeyRing(provider, store);
+    const key = await ring.current("space-1");
+
+    const wrapped = await ring.wrapped(key.id);
+
+    expect(wrapped).toEqual(store.rows[0]);
+    expect(wrapped.wrappedKey).not.toContain(Buffer.from(key.key).toString("base64url"));
+    // Opened from the record alone, with no store and no ring, as a restore does.
+    const opened = await provider.unwrap(wrapped, {
+      spaceId: wrapped.spaceId,
+      version: wrapped.version,
+    });
+    expect(Buffer.from(opened)).toEqual(Buffer.from(key.key));
+    await expect(
+      new LocalKeyProvider([master("b")]).unwrap(wrapped, { spaceId: "space-1", version: 1 }),
+    ).rejects.toThrow(/not configured/);
+    await expect(ring.wrapped("no-such-key")).rejects.toThrow(/no longer exists/);
+  });
+
   it.each(["current", "rotate"] as const)(
     "stores no key from a %s call whose signal aborted while the key manager was wrapping",
     async (call) => {

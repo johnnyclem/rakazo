@@ -3,7 +3,11 @@ import type {
   RecordLedgerAppendRequest,
   RecordLedgerEntry,
   RecordLedgerHead,
+  RecordLedgerListRequest,
+  RecordLedgerListResult,
   RecordLedgerProvider,
+  RecordLedgerReadRequest,
+  RecordLedgerReadResult,
 } from "@rakazo/adapter-kit";
 import { RecordLedgerConflict, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
 
@@ -61,6 +65,42 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
     }
     this.streams.set(request.stream, stored);
     return headOf(stored)!;
+  }
+
+  async read(
+    request: RecordLedgerReadRequest,
+    signal: AbortSignal,
+  ): Promise<RecordLedgerReadResult> {
+    signal.throwIfAborted();
+    if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
+    const stored = this.streams.get(request.stream) ?? [];
+    return {
+      entries: stored.slice(request.after, request.after + request.limit).map((entry, index) => ({
+        seq: request.after + index + 1,
+        kind: entry.kind,
+        occurredAt: new Date(entry.occurredAt),
+        payload: Uint8Array.from(entry.payload),
+      })),
+      head: headOf(stored),
+    };
+  }
+
+  async list(
+    request: RecordLedgerListRequest,
+    signal: AbortSignal,
+  ): Promise<RecordLedgerListResult> {
+    signal.throwIfAborted();
+    if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
+    const ids = [...this.streams.keys()].sort().filter((id) => id > (request.after ?? ""));
+    const page = ids.slice(0, request.limit);
+    return {
+      streams: page.map((stream) => ({
+        stream,
+        head: headOf(this.streams.get(stream)!),
+        unreadable: false,
+      })),
+      next: ids.length > request.limit ? page.at(-1)! : null,
+    };
   }
 }
 

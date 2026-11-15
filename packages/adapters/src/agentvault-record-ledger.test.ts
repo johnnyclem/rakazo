@@ -85,6 +85,77 @@ describe("AgentVaultRecordLedger", () => {
     );
   });
 
+  it("reads a page of entries with the token, and turns each into what was sent", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const read = await ledger((url, init) => {
+      seen.push({ url, init });
+      return Response.json({
+        entries: [
+          { seq: 3, kind: "memory.revision", at: "2026-01-02T03:04:05.678Z", payload: "-_8A" },
+        ],
+        head: { seq: 3, hash: HASH },
+      });
+    }).read({ stream: "stream1", after: 2, limit: 50 }, signal);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(
+      "https://ledger.example.test/v1/streams/stream1/entries?after=2&limit=50",
+    );
+    expect(seen[0]!.init).toMatchObject({ method: "GET", redirect: "error", signal });
+    expect(seen[0]!.init.headers).toMatchObject({ authorization: "Bearer fake-token" });
+    expect(read.head).toEqual({ seq: 3, digest: HASH });
+    expect(read.entries).toEqual([
+      {
+        seq: 3,
+        kind: "memory.revision",
+        occurredAt: new Date("2026-01-02T03:04:05.678Z"),
+        payload: Buffer.from([0xfb, 0xff, 0x00]),
+      },
+    ]);
+  });
+
+  it("lists streams, marking a damaged one unreadable", async () => {
+    const seen: string[] = [];
+    const listed = await ledger((url) => {
+      seen.push(url);
+      return Response.json({
+        streams: [
+          { stream: "a", head: { seq: 2, hash: HASH } },
+          { stream: "b", head: null, corrupt: true },
+        ],
+        next: "b",
+      });
+    }).list({ after: "0", limit: 2 }, signal);
+
+    expect(seen).toEqual(["https://ledger.example.test/v1/streams?limit=2&after=0"]);
+    expect(listed).toEqual({
+      streams: [
+        { stream: "a", head: { seq: 2, digest: HASH }, unreadable: false },
+        { stream: "b", head: null, unreadable: true },
+      ],
+      next: "b",
+    });
+  });
+
+  it("reports a failed read or list as the ledger being unavailable, never as an empty stream", async () => {
+    const attempts: Array<(wire: AgentVaultRecordLedger) => Promise<unknown>> = [
+      (wire) => wire.read({ stream: "stream1", after: 0, limit: 10 }, signal),
+      (wire) => wire.list({ limit: 10 }, signal),
+    ];
+    const answers: Array<[() => Response, RecordLedgerUnavailable["reason"]]> = [
+      [() => Response.json({ error: "unauthorized" }, { status: 401 }), "credential"],
+      [() => Response.json({ error: "invalid" }, { status: 400 }), "rejected"],
+      [() => Response.json({ error: "internal" }, { status: 500 }), "unavailable"],
+      [() => new Response("not json"), "unavailable"],
+      [() => Response.json({ entries: "nope", streams: "nope" }), "unavailable"],
+    ];
+    for (const attempt of attempts) {
+      for (const [answer, reason] of answers) {
+        expect((await unavailable(attempt(ledger(answer)))).reason).toBe(reason);
+      }
+    }
+  });
+
   it("refuses a URL that would send the token in the clear", () => {
     const create = (baseUrl: string) =>
       new AgentVaultRecordLedger({ baseUrl, token: "fake-token" });

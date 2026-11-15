@@ -17,6 +17,7 @@
     "secrets:infisical": "tsx src/cli/secrets-infisical.ts",
     "content-encryption": "tsx src/cli/content-encryption.ts",
     "home-storage": "tsx src/cli/home-storage.ts",
+    "record-ledger": "tsx src/cli/record-ledger.ts",
     "shared-storage": "tsx src/cli/shared-storage.ts",
     "wrap-env": "tsx src/cli/wrap-env.ts"
   },

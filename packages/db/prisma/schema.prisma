@@ -878,6 +878,8 @@ model RecordLedgerStream {
   shippedSeq    Int                 @default(0)
   shippedDigest String?
   shippedAt     DateTime?
+  /// The Space key the stream last announced, so a new one is announced when it changes.
+  keyId         String?
   /// Set when the ledger refuses this stream's entries; shipping stops until cleared.
   stoppedAt     DateTime?
   createdAt     DateTime            @default(now())
@@ -896,7 +898,8 @@ model RecordLedgerEntry {
   /// The row this entry records, so no row is sealed twice.
   sourceId   String
   occurredAt DateTime
-  /// Ciphertext under the Space's content key: the only form of the record that leaves the database.
+  /// What is sent to the ledger: a record sealed under the Space's content key, or a Space key
+  /// wrapped by a master key. Never anything readable without a key.
   payload    String
   createdAt  DateTime           @default(now())
 
