@@ -352,6 +352,7 @@ Chinese guides cover [self-hosting](./docs/zh-CN/self-host.md), [models](./docs/
 - [Upgrading](./docs/self-host-upgrading.md)
 - [Logs and monitoring](./docs/self-host-observability.md)
 - [Audit log](./docs/self-host-audit-log.md)
+- [Record ledger](./docs/self-host-record-ledger.md)
 - [Apps and clients](./docs/self-host-clients.md)
 - [Billing](./docs/self-host-billing.md)
 - [Computer runtime and isolation](./docs/computer-runtime.md)
