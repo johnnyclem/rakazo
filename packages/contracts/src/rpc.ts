@@ -1613,6 +1613,11 @@ export const appContract = {
   /** The keys the current Space's record ledger is sealed to; its owner only. */
   recordLedger: {
     keys: oc.output(RecordLedgerKeysSchema),
+    /**
+     * Whether a new account should be asked for a key now: the Space is the only one it owns, has
+     * no key and no backup yet, so a key made now seals everything. False for anyone else.
+     */
+    offer: oc.output(z.object({ offer: z.boolean() })),
     /** Adding a key already held changes nothing. */
     addKey: oc
       .input(z.object({ recipient: OwnerKeyRecipientSchema }).strict())

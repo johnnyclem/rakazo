@@ -19,7 +19,9 @@ const outsider = { spaceId: "space-1", userId: "outsider-1", email: "x@rakazo.te
 
 type KeyRow = { id: string; spaceId: string; recipient: string; label: string | null };
 
-function ledgerDeps(options: { announcedUnderMasterKey?: boolean } = {}) {
+function ledgerDeps(
+  options: { announcedUnderMasterKey?: boolean; recordLedgerEnabled?: boolean } = {},
+) {
   const keys: Array<KeyRow & { createdAt: Date }> = [];
   const roles = new Map([
     ["space-1:owner-1", "owner"],
@@ -27,6 +29,11 @@ function ledgerDeps(options: { announcedUnderMasterKey?: boolean } = {}) {
   ]);
   const prisma = {
     spaceMember: {
+      findMany: vi.fn(async ({ where }: { where: { userId: string; role: string } }) =>
+        [...roles]
+          .filter(([key, role]) => key.endsWith(`:${where.userId}`) && role === where.role)
+          .map(([key]) => ({ spaceId: key.split(":")[0] })),
+      ),
       findUnique: vi.fn(
         async ({ where }: { where: { spaceId_userId: Record<string, string> } }) => {
           const { spaceId, userId } = where.spaceId_userId;
@@ -63,13 +70,14 @@ function ledgerDeps(options: { announcedUnderMasterKey?: boolean } = {}) {
     prisma: prisma as unknown as PrismaClient,
     env: { defaultProvider: "fake", defaultModel: "fake-model" },
     dataDir: "/tmp/rakazo-router-test",
+    recordLedgerEnabled: options.recordLedgerEnabled ?? true,
   } as unknown as RouterDeps;
   const handler = new RPCHandler(createRouter(deps), {
     clientInterceptors: [onError((error, { path, signal }) => handleRpcError(error, path, signal))],
   });
   async function call(
     actor: Actor,
-    path: "keys" | "addKey" | "removeKey",
+    path: "keys" | "offer" | "addKey" | "removeKey",
     input: Record<string, unknown> = {},
   ) {
     const { response } = await handler.handle(
@@ -88,7 +96,7 @@ function ledgerDeps(options: { announcedUnderMasterKey?: boolean } = {}) {
       },
     };
   }
-  return { keys, call };
+  return { keys, roles, call };
 }
 
 describe("recordLedger routes", () => {
@@ -165,6 +173,34 @@ describe("recordLedger routes", () => {
   it("says when a stream of the Space was already announced under the deployment's key", async () => {
     const { call } = ledgerDeps({ announcedUnderMasterKey: true });
     expect((await call(owner, "keys")).body.json.earlier).toBe(true);
+  });
+
+  it("asks a new account for a key only while one would seal everything", async () => {
+    const { call, roles } = ledgerDeps();
+    const asked = async (actor: Actor) => (await call(actor, "offer")).body.json;
+    expect(await asked(owner)).toEqual({ offer: true });
+    // Not the person who owns the Space, and not someone it is only shared with.
+    expect(await asked(member)).toEqual({ offer: false });
+    expect(await asked(outsider)).toEqual({ offer: false });
+
+    // Someone who owns another Space already has had their chance.
+    roles.set("space-2:owner-1", "owner");
+    expect(await asked(owner)).toEqual({ offer: false });
+    roles.delete("space-2:owner-1");
+
+    const { recipient } = await generateOwnerIdentity();
+    await call(owner, "addKey", { recipient });
+    expect(await asked(owner)).toEqual({ offer: false });
+  });
+
+  it("asks nobody for a key where no ledger is kept", async () => {
+    const { call } = ledgerDeps({ recordLedgerEnabled: false });
+    expect((await call(owner, "offer")).body.json).toEqual({ offer: false });
+  });
+
+  it("asks nobody once a stream was announced under the deployment's key", async () => {
+    const { call } = ledgerDeps({ announcedUnderMasterKey: true });
+    expect((await call(owner, "offer")).body.json).toEqual({ offer: false });
   });
 
   it("is audited as a credential change, without the key", () => {

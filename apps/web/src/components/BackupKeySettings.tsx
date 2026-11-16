@@ -10,11 +10,9 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
 import { useState } from "react";
-import type { OwnerKeyDraft } from "../lib/owner-key";
-import { createOwnerKey } from "../lib/owner-key";
 import { useSave, useSpaceQueries } from "../lib/query";
 import { errorText } from "../lib/user-error";
-import { BackupKeyDialog } from "./BackupKeyDialog";
+import { BackupKeyDialog, useNewBackupKey } from "./BackupKeyDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SettingsGroup, SettingsRow } from "./SettingsRows";
 
@@ -29,9 +27,8 @@ export function BackupKeySettings() {
   const { t } = useLingui();
   const keysOptions = useSpaceQueries().recordLedger.keys.queryOptions();
   const keysQuery = useQuery(keysOptions);
-  const [draft, setDraft] = useState<OwnerKeyDraft | null>(null);
+  const { create, draft, discard } = useNewBackupKey();
   const [removing, setRemoving] = useState<string | null>(null);
-  const create = useSave({ save: () => createOwnerKey(), onSaved: setDraft });
   const remove = useSave({
     save: (recipient: string, rpc) => rpc.recordLedger.removeKey({ recipient }),
     stale: [keysOptions.queryKey],
@@ -128,7 +125,7 @@ export function BackupKeySettings() {
           {shownError}
         </p>
       ) : null}
-      {draft ? <BackupKeyDialog draft={draft} onClose={() => setDraft(null)} /> : null}
+      {draft ? <BackupKeyDialog draft={draft} onClose={discard} /> : null}
       {removing ? (
         <ConfirmDialog
           title={t`Remove backup key?`}

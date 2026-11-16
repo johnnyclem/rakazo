@@ -9,6 +9,7 @@ import { rpc } from "../lib/rpc";
 import { useSignOut } from "../lib/sign-out";
 import { errorText } from "../lib/user-error";
 import { ensureFirstBot, FirstBotRetry } from "./onboarding/first-bot";
+import { KeyStep } from "./onboarding/key-step";
 import { ModelStep } from "./onboarding/model-step";
 import { useOnboardingModel } from "./onboarding/use-onboarding-model";
 
@@ -17,14 +18,23 @@ export function OnboardingPage() {
   const navigate = useNavigate();
   const fieldId = useId();
   // The URL holds the survey and model steps, so /onboarding/survey and /onboarding/model open directly.
+  // The key step does not: it is offered again, or not, each time onboarding loads.
   const { step: routeStep } = useParams();
   const linkedStep = routeStep === "survey" || routeStep === "model" ? routeStep : undefined;
   const [creatingBot, setCreatingBot] = useState(false);
   const [surveyDone, setSurveyDone] = useState(false);
-  const step = creatingBot ? "bot" : surveyDone ? "loading" : (linkedStep ?? "loading");
+  const [keyOffered, setKeyOffered] = useState(false);
+  const step = creatingBot
+    ? "bot"
+    : surveyDone
+      ? "loading"
+      : keyOffered
+        ? "key"
+        : (linkedStep ?? "loading");
   const [billingEnabled, setBillingEnabled] = useState(false);
-  // The step after the survey; null until me loads.
+  // The step after the survey, and after the key; null until me loads.
   const [afterSurvey, setAfterSurvey] = useState<"model" | "bot" | null>(null);
+  const [afterKey, setAfterKey] = useState<"survey" | "model" | "bot" | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
   const model = useOnboardingModel({
     catalog,
@@ -42,13 +52,24 @@ export function OnboardingPage() {
       rpc.me(undefined, { signal }),
       rpc.models.list(undefined, { signal }).catch(() => []),
     ])
-      .then(([me, models]) => {
+      .then(async ([me, models]) => {
         if (signal.aborted) return;
         setBillingEnabled(me.billingEnabled);
         setCatalog(models);
         const next = me.needsModel ? "model" : "bot";
+        const first = me.needsSignupSurvey ? "survey" : next;
         setAfterSurvey(next);
-        if (!linkedStep) goTo(me.needsSignupSurvey ? "survey" : next);
+        setAfterKey(first);
+        // Asked before anything else, while nothing is recorded yet. Not being able to ask is
+        // not a reason to hold up onboarding.
+        const offered = me.recordLedgerEnabled
+          ? await rpc.recordLedger
+              .offer(undefined, { signal })
+              .then((answer) => answer.offer)
+              .catch(() => false)
+          : false;
+        if (signal.aborted) return;
+        if (!linkedStep) goTo(offered ? "key" : first);
       })
       .catch(() => {
         if (signal.aborted) return;
@@ -67,8 +88,9 @@ export function OnboardingPage() {
     goTo(afterSurvey);
   }, [surveyDone, afterSurvey]);
 
-  function goTo(next: "survey" | "model" | "bot") {
+  function goTo(next: "key" | "survey" | "model" | "bot") {
     if (next === "bot") setCreatingBot(true);
+    setKeyOffered(next === "key");
     navigate(next === "bot" ? "/onboarding" : `/onboarding/${next}`, { replace: true });
   }
 
@@ -106,6 +128,7 @@ export function OnboardingPage() {
     <div className="min-h-full bg-background px-6 py-12" data-rakazo-surface="onboarding">
       <AccountMenu signingOut={signingOut} onLogOut={() => void logOut()} />
       <div className="mx-auto w-full max-w-[560px]">
+        {step === "key" ? <KeyStep onDone={() => goTo(afterKey ?? "bot")} /> : null}
         {step === "survey" ? <SignupSurvey onDone={() => setSurveyDone(true)} /> : null}
         {step === "model" ? <ModelStep model={model} fieldId={fieldId} /> : null}
         {step === "bot" ? (

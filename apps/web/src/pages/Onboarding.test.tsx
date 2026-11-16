@@ -19,6 +19,7 @@ vi.mock("../lib/rpc", () => ({
           account.fail = reject;
         }),
     ),
+    recordLedger: { offer: vi.fn(async () => ({ offer: false })) },
     models: {
       list: vi.fn(async () => [
         {
@@ -44,6 +45,16 @@ vi.mock("@lingui/react/macro", () => {
       value === 1 ? one : other,
   };
 });
+
+vi.mock("./onboarding/key-step", () => ({
+  KeyStep: ({ onDone }: { onDone: () => void }) => (
+    <div data-testid="onboarding-key">
+      <button type="button" onClick={onDone}>
+        Finish key
+      </button>
+    </div>
+  ),
+}));
 
 import { rpc } from "../lib/rpc";
 import { OnboardingPage } from "./Onboarding";
@@ -173,4 +184,99 @@ it.each([
   await act(async () => settle());
   expect(router.pathname).toBe("/sign-in");
   act(() => root.unmount());
+});
+
+async function openOnboarding(path = "/onboarding") {
+  const root = createRoot(document.body.appendChild(document.createElement("div")));
+  await act(async () =>
+    root.render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/onboarding/:step?" element={<OnboardingPage />} />
+        </Routes>
+      </MemoryRouter>,
+    ),
+  );
+  return root;
+}
+
+const heading = () => document.querySelector("h1")?.textContent;
+const keyStep = () => document.querySelector('[data-testid="onboarding-key"]');
+
+it("asks for a backup key before anything else, then goes on to the next step", async () => {
+  vi.mocked(rpc.recordLedger.offer).mockResolvedValueOnce({ offer: true });
+  const root = await openOnboarding();
+  await act(async () =>
+    account.load({
+      needsModel: true,
+      needsSignupSurvey: true,
+      billingEnabled: true,
+      recordLedgerEnabled: true,
+    }),
+  );
+  expect(keyStep()).not.toBeNull();
+  expect(heading()).toBeUndefined();
+
+  await act(async () =>
+    [...document.querySelectorAll("button")].find((b) => b.textContent === "Finish key")!.click(),
+  );
+  expect(keyStep()).toBeNull();
+  expect(heading()).toBe("Welcome to Rakazo");
+  await act(async () => root.unmount());
+});
+
+it("goes on to the model step after the key when there is no survey", async () => {
+  vi.mocked(rpc.recordLedger.offer).mockResolvedValueOnce({ offer: true });
+  const root = await openOnboarding();
+  await act(async () =>
+    account.load({ needsModel: true, needsSignupSurvey: false, recordLedgerEnabled: true }),
+  );
+  await act(async () =>
+    [...document.querySelectorAll("button")].find((b) => b.textContent === "Finish key")!.click(),
+  );
+  expect(heading()).toBe("Connect a model");
+  await act(async () => root.unmount());
+});
+
+it("does not stop at the key step when no key is offered", async () => {
+  const root = await openOnboarding();
+  await act(async () =>
+    account.load({ needsModel: true, needsSignupSurvey: false, recordLedgerEnabled: true }),
+  );
+  expect(rpc.recordLedger.offer).toHaveBeenCalledTimes(1);
+  expect(keyStep()).toBeNull();
+  expect(heading()).toBe("Connect a model");
+  await act(async () => root.unmount());
+});
+
+it("does not ask the server about a key where no ledger is kept", async () => {
+  vi.mocked(rpc.recordLedger.offer).mockClear();
+  const root = await openOnboarding();
+  await act(async () => account.load({ needsModel: true, needsSignupSurvey: false }));
+  expect(rpc.recordLedger.offer).not.toHaveBeenCalled();
+  expect(heading()).toBe("Connect a model");
+  await act(async () => root.unmount());
+});
+
+it("goes on when it cannot find out whether a key is offered", async () => {
+  vi.mocked(rpc.recordLedger.offer).mockRejectedValueOnce(new Error("offline"));
+  const root = await openOnboarding();
+  await act(async () =>
+    account.load({ needsModel: true, needsSignupSurvey: false, recordLedgerEnabled: true }),
+  );
+  expect(keyStep()).toBeNull();
+  expect(heading()).toBe("Connect a model");
+  await act(async () => root.unmount());
+});
+
+it("decides again on a reload at the key step, and drops it once it is no longer offered", async () => {
+  // The key step has no address of its own to come back to: the server is asked each time.
+  const root = await openOnboarding("/onboarding/key");
+  expect(keyStep()).toBeNull();
+  await act(async () =>
+    account.load({ needsModel: true, needsSignupSurvey: false, recordLedgerEnabled: true }),
+  );
+  expect(keyStep()).toBeNull();
+  expect(heading()).toBe("Connect a model");
+  await act(async () => root.unmount());
 });
