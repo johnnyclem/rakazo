@@ -101,6 +101,16 @@ and they carry the time of the restore (the original times stay in the old strea
 them). Audit events are not copied, since they are the old organization's record. Accounts, Spaces
 and bots are not recreated.
 
+**After losing the ledger gateway as well.** When the gateway ran with a canister, the canister holds a
+copy of everything it anchored, and the gateway's directory can be rebuilt from it with no key and none
+of its own files: `agentvault ledger rebuild --canister-id <id> --ic-host https://icp-api.io --dir ./recovered`,
+then `agentvault ledger serve --dir ./recovered`, with `RECORD_LEDGER_URL` and `RECORD_LEDGER_TOKEN`
+pointed at it. `restore` then works as above. Only what was anchored is there: entries newer than
+the last anchor run (up to the anchor interval) are not, and a range anchored with `--digest-only`
+cannot be rebuilt. The canister id is public, so for a ledger sealed to its owner, the owner's
+identity file and that id are all they need to keep. See the
+[gateway guide](https://github.com/johnnyclem/agentvault/blob/main/docs/guides/ledger.md#rebuild-from-the-canister).
+
 **After restoring Postgres from an older backup.** Restore the backup, then run `restore <stream>`
 for each stream `list` shows, before starting the API and worker. Memory and audit events the
 backup lacks come back under their own ids, and the database's record of the stream is re-linked to
