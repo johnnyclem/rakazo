@@ -141,6 +141,12 @@ private half never reaches the server, and is offered as a file to save. The Spa
 half only once the owner has downloaded or copied it. The same page lists the Space's keys and
 removes them; it is the same list as `recipient list`, up to 5 keys per Space.
 
+A new account is also offered a key as the first step of onboarding, before anything is recorded, so
+a key made then seals everything the Space records from the start. It can be skipped, and then waits
+in Settings. Only an account's first Space is offered one: a Space made later starts without a key,
+and its owner adds one in Settings, after which what its streams already recorded stays openable by
+the master key.
+
 The list of owner keys is the whole policy. One key is self-custody: lose the file and nobody can
 open that ledger. Adding a second key the owner trusts, or a recovery key the operator keeps
 offline, makes it recoverable. No keys keeps the master-key behaviour above.
@@ -205,6 +211,7 @@ Consider this before turning the ledger on where people expect a deleted note to
 
 Nothing in the apps shows a bot's ledger status, and restoring is an operator command. An owner
 makes and removes keys on web and desktop; the mobile app does not, because holding a private key
-there needs its own place to keep it. There is no key derived from a wallet, and adding a key does
-not rotate the Space key, so a Space that already has streams stays readable by the master key. Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
+there needs its own place to keep it, so an account made there is not offered a key at signup. There
+is no key derived from a wallet, a Space made later does not reuse its owner's key, and adding a key
+does not rotate the Space key, so a Space that already has streams stays readable by the master key. Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
 is noticed only when the database survives to compare (it warns), or by verifying the anchor.

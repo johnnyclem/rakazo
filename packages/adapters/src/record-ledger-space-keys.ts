@@ -70,6 +70,29 @@ export async function listOwnerKeys(
 }
 
 /**
+ * Whether `userId` should be asked for a key for this Space now. That is while a key still seals
+ * everything: the Space is the only one they own, has no key, and no stream of it has announced
+ * its key to the master key. It is the moment right after signup, before anything is recorded.
+ * Anyone who does not own the Space, or owns others, is not asked.
+ */
+export async function shouldOfferOwnerKey(
+  prisma: PrismaClient,
+  scope: { spaceId: string; userId: string },
+): Promise<boolean> {
+  const [owned, held] = await Promise.all([
+    prisma.spaceMember.findMany({
+      where: { userId: scope.userId, role: "owner" },
+      select: { spaceId: true },
+      take: 2,
+    }),
+    listOwnerKeys(prisma, scope.spaceId),
+  ]);
+  return (
+    owned.length === 1 && owned[0]!.spaceId === scope.spaceId && !held.keys.length && !held.earlier
+  );
+}
+
+/**
  * Seals the Space's ledger to `recipient` as well, from the next sealing pass. Returns false when
  * it already was. Throws for something that is not an age public key, or past the limit.
  */
