@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { OWNER_KEY_RECIPIENT_PATTERN, ownerKeyFile } from "@rakazo/contracts";
 import type { DataKey } from "@rakazo/db";
 import { describe, expect, it } from "vitest";
 import {
@@ -98,18 +99,42 @@ describe("owner keys", () => {
   });
 });
 
+describe("the key file an owner saves", () => {
+  it("is read back as the identity it holds, and its public key is one the contract accepts", async () => {
+    for (let index = 0; index < 25; index += 1) {
+      const { identity, recipient } = await generateOwnerIdentity();
+      expect(recipient).toMatch(OWNER_KEY_RECIPIENT_PATTERN);
+      const file = ownerKeyFile({
+        identity,
+        recipient,
+        createdAt: new Date("2026-11-16T10:00:00Z"),
+      });
+      expect(file).toBe(
+        `# created: 2026-11-16T10:00:00.000Z\n# public key: ${recipient}\n${identity}\n`,
+      );
+      expect(parseIdentityFile(file)).toEqual([identity]);
+    }
+  });
+});
+
 // The point of using the age format: the stock tool opens a wrapped key, so an owner is not tied to
 // this code to get their data back. Skipped where the tool is not installed.
 const ageTool = spawnSync("age", ["--version"]).status === 0;
 
 describe.skipIf(!ageTool)("owner keys and the stock age tool", () => {
-  it("opens a wrapped key with `age -d`", async () => {
+  it("opens a wrapped key with `age -d`, from the file the app offers to save", async () => {
     const owner = await generateOwnerIdentity();
     const original = key();
     const wrapped = await wrapKeyToRecipients(original, [owner.recipient]);
     const directory = mkdtempSync(path.join(tmpdir(), "owner-keys-"));
     try {
-      writeFileSync(path.join(directory, "identity.txt"), `${owner.identity}\n`, { mode: 0o600 });
+      writeFileSync(
+        path.join(directory, "identity.txt"),
+        ownerKeyFile({ ...owner, createdAt: new Date() }),
+        {
+          mode: 0o600,
+        },
+      );
       writeFileSync(path.join(directory, "wrapped.age"), Buffer.from(wrapped, "base64url"));
       const opened = spawnSync("age", ["-d", "-i", "identity.txt", "wrapped.age"], {
         cwd: directory,

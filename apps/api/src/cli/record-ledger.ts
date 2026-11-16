@@ -4,24 +4,21 @@ import { pipeline } from "node:stream/promises";
 import { parseArgs } from "node:util";
 import type { LedgerKeys, ReadEntry, RestoreReport } from "@rakazo/adapters";
 import {
-  assertRecipient,
+  addOwnerKey,
   contentKeyProviderFromEnv,
   createRecordLedgerProvider,
   generateOwnerIdentity,
   LedgerStreamReader,
   listLedgerStreams,
+  listOwnerKeys,
   parseIdentityFile,
+  removeOwnerKey,
   restoreLedgerStream,
   unwrapEnvFromKeyManager,
 } from "@rakazo/adapters";
+import { ownerKeyFile } from "@rakazo/contracts";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
-import {
-  createDb,
-  createRowId,
-  LocalKeyProvider,
-  masterKeysFromEnv,
-  runAsSystem,
-} from "@rakazo/db";
+import { createDb, LocalKeyProvider, masterKeysFromEnv, runAsSystem } from "@rakazo/db";
 import { bestEffort } from "@rakazo/logging";
 
 loadRootEnv();
@@ -288,11 +285,10 @@ async function restore(streamId: string) {
 /** A new owner key: the private identity to a new owner-only file, the public key to the screen. */
 async function keygen() {
   const { identity, recipient } = await generateOwnerIdentity();
-  writeFileSync(
-    flags.output!,
-    `# created: ${new Date().toISOString()}\n# public key: ${recipient}\n${identity}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
+  writeFileSync(flags.output!, ownerKeyFile({ identity, recipient, createdAt: new Date() }), {
+    flag: "wx",
+    mode: 0o600,
+  });
   write(
     `Identity written to ${flags.output}. Keep it: it is the only way to open what is sealed to it.`,
   );
@@ -306,37 +302,25 @@ async function recipient() {
       throw new Error("No such Space");
     }
     if (command === "recipient list") {
-      const rows = await prisma.recordLedgerRecipient.findMany({
-        where: { spaceId },
-        orderBy: { createdAt: "asc" },
-      });
-      for (const row of rows) {
-        write(
-          `${row.recipient}  ${row.label ?? ""}  added ${row.createdAt.toISOString()}`.trimEnd(),
-        );
+      const { keys } = await listOwnerKeys(prisma, spaceId);
+      for (const row of keys) {
+        write(`${row.recipient}  ${row.label ?? ""}  added ${row.createdAt}`.trimEnd());
       }
-      if (!rows.length) write("No owner keys: the ledger is sealed under the master key.");
+      if (!keys.length) write("No owner keys: the ledger is sealed under the master key.");
       return;
     }
     const [key] = args;
     if (command === "recipient add") {
-      await assertRecipient(key!);
-      const { count } = await prisma.recordLedgerRecipient.createMany({
-        data: [{ id: createRowId(), spaceId, recipient: key!, label: flags.label ?? null }],
-        skipDuplicates: true,
-      });
+      const added = await addOwnerKey(prisma, spaceId, key!, flags.label ?? null);
       write(
-        count
+        added
           ? "Added. Streams announce their keys to it on the next pass, history included."
           : "That key is already set.",
       );
       return;
     }
-    const { count } = await prisma.recordLedgerRecipient.deleteMany({
-      where: { spaceId, recipient: key! },
-    });
     write(
-      count
+      (await removeOwnerKey(prisma, spaceId, key!))
         ? "Removed. It is given no more keys, but keeps any it already opened: rotate the Space key to cut it off from new entries."
         : "That key was not set.",
     );

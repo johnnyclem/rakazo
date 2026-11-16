@@ -40,6 +40,7 @@ import {
   createMediaGenerationProvider,
   createPaymentWalletProvider,
   createProductAnalytics,
+  createRecordLedgerProvider,
   createRunReconciler,
   createRunRuntime,
   createRunSandbox,
@@ -634,6 +635,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     PAYMENT_WALLET_PROVIDER: env.paymentWalletProvider,
     PAYMENT_WALLET_CLIENT_ID: env.paymentWalletClientId,
   });
+  // Misconfiguration stops startup here, as it does in the worker that ships the ledger.
+  const recordLedgerEnabled = createRecordLedgerProvider(process.env) !== undefined;
   // One cache serves models.list, selection validation, and run-time model
   // resolution alike, so a list call warms the run path in this process.
   const codexCatalog = new CodexCatalogCache();
@@ -765,6 +768,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     cloudAgent,
     userCloudAgents,
     paymentWallet,
+    recordLedgerEnabled,
     codexCatalog,
     prisma,
     notifications,

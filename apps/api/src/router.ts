@@ -56,6 +56,7 @@ import { onboardingRoutes } from "./routes/onboarding.js";
 import { organizationsRoutes } from "./routes/organizations.js";
 import { pagesRoutes } from "./routes/pages.js";
 import { paymentWalletRoutes } from "./routes/payment-wallet.js";
+import { recordLedgerRoutes } from "./routes/record-ledger.js";
 import { routinesRoutes } from "./routes/routines.js";
 import { spacesRoutes } from "./routes/spaces.js";
 import { spendingLimitRoutes } from "./routes/spending-limit.js";
@@ -78,6 +79,8 @@ export interface RouterDeps {
   userCloudAgents?: UserCloudAgents;
   /** The deployment's wallet provider; absent hides purchases. */
   paymentWallet?: PaymentWalletProvider | null;
+  /** Whether the deployment keeps a record ledger, so a Space owner can hold its key. */
+  recordLedgerEnabled?: boolean;
   prisma: PrismaClient;
   events: ThreadEvents;
   boardEvents: BoardEvents;
@@ -189,6 +192,7 @@ export function createRouter(deps: RouterDeps) {
     ...contentRoutes(ctx),
     ...pagesRoutes(ctx),
     ...paymentWalletRoutes(ctx),
+    ...recordLedgerRoutes(ctx),
     ...spendingLimitRoutes(ctx),
   });
 }

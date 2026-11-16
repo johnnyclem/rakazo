@@ -1519,6 +1519,8 @@ export const MeSchema = z.object({
   needsSignupSurvey: z.boolean().optional(),
   /** The wallet bots can spend from, when this deployment offers one. Absent from older servers. */
   paymentWalletProvider: z.object({ id: z.string(), name: z.string() }).nullable().optional(),
+  /** Whether this deployment keeps a record ledger, so a Space owner can hold its key. Absent from older servers. */
+  recordLedgerEnabled: z.boolean().optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 
