@@ -52,6 +52,7 @@ export * from "./organizations.js";
 export * from "./page-shares.js";
 export * from "./prisma-errors.js";
 export * from "./provider-transactions.js";
+export * from "./record-ledger-recipients.js";
 export * from "./repos.js";
 export * from "./roster-changes.js";
 export * from "./row-id.js";
