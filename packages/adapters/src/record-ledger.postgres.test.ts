@@ -1,9 +1,10 @@
 import type { RecordLedgerAppendRequest } from "@rakazo/adapter-kit";
 import { RecordLedgerUnavailable } from "@rakazo/adapter-kit";
-import type { ContentKeyRing, PrismaClient } from "@rakazo/db";
-import { asSystem, ciphertextKeyId, createDb, decryptText } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createRecordLedgerReconciler } from "./record-ledger.js";
+import type { LedgerFixture } from "./record-ledger.test-support.js";
+import { createLedgerFixture } from "./record-ledger.test-support.js";
 import { RecordLedgerEmulator } from "./record-ledger-emulator.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -18,149 +19,78 @@ describe("record ledger reconciler", () => {
 });
 
 describePostgres("record ledger (PostgreSQL)", () => {
-  const suffix = `${process.pid}-${Date.now()}`;
-  const organizationId = `ledger-org-${suffix}`;
-  const otherOrganizationId = `${organizationId}-other`;
-  const spaceId = `ledger-space-${suffix}`;
-  const userId = `ledger-user-${suffix}`;
-  let db: PrismaClient;
-  let prisma: PrismaClient;
-  let keys: ContentKeyRing;
-  let close: () => Promise<void>;
+  let fixture: LedgerFixture;
   let ledger: RecordLedgerEmulator;
   let botId: string;
-  let bots = 0;
 
-  /** Every row already written counts as settled. */
-  const reconciler = (provider = ledger) =>
-    createRecordLedgerReconciler(db, provider, {
-      settleMs: 0,
-      now: () => new Date(Date.now() + 5_000),
-    });
+  const reconciler = (provider = ledger) => fixture.reconciler(provider);
 
   beforeAll(async () => {
-    const created = createDb(databaseUrl!, { encryptContent: true });
-    db = created.prisma;
-    prisma = asSystem(db);
-    keys = created.contentKeys;
-    close = async () => {
-      await prisma.organization.deleteMany({
-        where: { id: { in: [organizationId, otherOrganizationId] } },
-      });
-      await db.$disconnect();
-      await created.pool.end();
-    };
-    for (const id of [organizationId, otherOrganizationId]) {
-      await prisma.organization.create({
-        data: { id, name: "Acme", slug: id, createdAt: new Date() },
-      });
-    }
-    await prisma.space.create({ data: { id: spaceId, organizationId, name: "Support" } });
+    fixture = await createLedgerFixture(databaseUrl!);
   });
 
-  afterAll(async () => close?.());
+  afterAll(async () => fixture?.close());
 
   beforeEach(async () => {
     ledger = new RecordLedgerEmulator();
-    bots += 1;
-    botId = `ledger-bot-${suffix}-${bots}`;
-    await prisma.bot.create({
-      data: { id: botId, spaceId, userId, name: "Researcher", color: "ink" },
-    });
+    botId = await fixture.newBot();
     // Earlier tests' rows are sealed, so each test sees only what it writes.
     await reconciler(new RecordLedgerEmulator())();
   });
 
-  async function remember(content: string, options: { shared?: boolean; path?: string } = {}) {
-    const where = {
-      spaceId,
-      scope: options.shared ? "user" : "bot",
-      botId: options.shared ? null : botId,
-      path: options.path ?? "MEMORY.md",
-    };
-    const existing = await prisma.memoryDocument.findFirst({ where });
-    const document = existing
-      ? await prisma.memoryDocument.update({
-          where: { id: existing.id },
-          data: { content, revision: existing.revision + 1 },
-        })
-      : await prisma.memoryDocument.create({ data: { ...where, userId, content } });
-    return prisma.memoryRevision.create({
-      data: { documentId: document.id, revision: document.revision, content },
-    });
-  }
-
-  function audit(data: {
-    action: string;
-    actorType?: string;
-    actorId?: string;
-    organizationId?: string;
-    spaceId?: string | null;
-  }) {
-    return prisma.auditEvent.create({
-      data: {
-        organizationId,
-        spaceId,
-        actorType: "user",
-        actorId: userId,
-        outcome: "success",
-        ...data,
-      },
-    });
-  }
-
-  const streamOf = (subject: string) =>
-    prisma.recordLedgerStream.findUnique({
-      where: { subject },
-      include: { entries: { orderBy: { seq: "asc" } } },
-    });
-
-  /** What a sealed entry says, opened with the Space's key as its owner would. */
-  async function open(entry: { id: string; streamId: string; payload: string }) {
-    const key = await keys.byId(ciphertextKeyId(entry.payload)!);
-    const location = {
-      table: "record_ledger_entries",
-      column: "payload",
-      rowId: entry.id,
-      owner: entry.streamId,
-    };
-    return JSON.parse(decryptText(key, location, entry.payload)) as Record<string, unknown>;
-  }
+  const remember = (content: string, options?: { shared?: boolean; path?: string }) =>
+    fixture.remember(botId, content, options);
 
   it("seals a bot's memory and actions into its stream, and the rest into the Space's", async () => {
     const first = await remember("Likes pour-over coffee");
     const second = await remember("Likes pour-over coffee, no sugar");
     const shared = await remember("The company is Acme", { shared: true });
-    const toolCall = await audit({ action: "tool.call", actorType: "bot", actorId: botId });
-    const approval = await audit({ action: "approval.decided" });
+    const toolCall = await fixture.audit({
+      action: "tool.call",
+      actorType: "bot",
+      actorId: botId,
+    });
+    const approval = await fixture.audit({ action: "approval.decided" });
     // Not this Space's record: an account event, and another organization's copy of an event.
-    await audit({ action: "auth.sign_in", spaceId: null });
-    await audit({ action: "credential.used", organizationId: otherOrganizationId });
+    await fixture.audit({ action: "auth.sign_in", spaceId: null });
+    await fixture.audit({
+      action: "credential.used",
+      organizationId: fixture.otherOrganizationId,
+    });
 
     await reconciler()();
 
-    const bot = (await streamOf(`bot:${botId}`))!;
-    expect(bot.entries.map((entry) => [entry.seq, entry.kind, entry.sourceId])).toEqual([
-      [1, "memory.revision", first.id],
-      [2, "memory.revision", second.id],
-      [3, "audit.event", toolCall.id],
+    const bot = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(fixture.recordsOf(bot.entries).map((entry) => [entry.kind, entry.sourceId])).toEqual([
+      ["memory.revision", first.id],
+      ["memory.revision", second.id],
+      ["audit.event", toolCall.id],
     ]);
-    expect(await open(bot.entries[1]!)).toMatchObject({
+    expect(await fixture.open(bot.entries[3]!)).toMatchObject({
       type: "memory.revision",
       id: second.id,
+      spaceId: fixture.spaceId,
+      userId: fixture.userId,
+      botId,
       scope: "bot",
       path: "MEMORY.md",
       revision: 2,
       content: "Likes pour-over coffee, no sugar",
     });
-    expect(await open(bot.entries[2]!)).toMatchObject({
+    expect(await fixture.open(bot.entries[4]!)).toMatchObject({
       type: "audit.event",
       id: toolCall.id,
+      organizationId: fixture.organizationId,
       action: "tool.call",
     });
 
-    const space = (await streamOf(`space:${spaceId}`))!;
-    expect(space.entries.slice(-2).map((entry) => [entry.kind, entry.sourceId])).toEqual([
+    const space = (await fixture.streamOf(`space:${fixture.spaceId}`))!;
+    expect(
+      fixture
+        .recordsOf(space.entries)
+        .slice(-2)
+        .map((entry) => [entry.kind, entry.sourceId]),
+    ).toEqual([
       ["memory.revision", shared.id],
       ["audit.event", approval.id],
     ]);
@@ -168,15 +98,85 @@ describePostgres("record ledger (PostgreSQL)", () => {
       space.entries.map((_, index) => index + 1),
     );
 
-    // The ledger holds every entry, acknowledged, and never a readable word of it.
-    expect(bot).toMatchObject({ sealedSeq: 3, shippedSeq: 3, stoppedAt: null });
+    // The ledger holds every entry, acknowledged, and never a readable word of a record.
+    expect(bot).toMatchObject({ sealedSeq: 5, shippedSeq: 5, stoppedAt: null });
     const sent = ledger.streams.get(bot.id)!;
-    expect(sent).toHaveLength(3);
-    expect(Buffer.from(sent[1]!.payload).toString()).toBe(bot.entries[1]!.payload);
-    expect(Buffer.from(sent[1]!.payload).toString()).not.toContain("pour-over");
-    expect(bot.shippedDigest).toBe(sent[2]!.digest);
+    expect(sent).toHaveLength(5);
+    expect(Buffer.from(sent[3]!.payload).toString()).toBe(bot.entries[3]!.payload);
+    expect(Buffer.from(sent[3]!.payload).toString()).not.toContain("pour-over");
+    expect(bot.shippedDigest).toBe(sent[4]!.digest);
     expect(bot.shippedAt).toBeInstanceOf(Date);
     expect(ledger.streams.get(space.id)).toHaveLength(space.entries.length);
+  });
+
+  it("gives a stream what it takes to open it: its Space key, wrapped, and who it is for", async () => {
+    await remember("hello");
+
+    await reconciler()();
+
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    const [key, header, revision] = stream.entries;
+    expect(key).toMatchObject({
+      seq: 1,
+      kind: "space.key",
+      sourceId: `${stream.id}:${stream.keyId}`,
+    });
+    const envelope = JSON.parse(key!.payload) as Record<string, unknown>;
+    expect(envelope).toMatchObject({
+      type: "space.key",
+      id: stream.keyId,
+      spaceId: fixture.spaceId,
+      version: 1,
+    });
+    // Only the wrapped form is in the ledger: the key itself never is.
+    const dataKey = await fixture.keys.byId(stream.keyId!);
+    for (const form of ["base64url", "base64", "hex"] as const) {
+      expect(key!.payload).not.toContain(Buffer.from(dataKey.key).toString(form));
+    }
+    expect(header).toMatchObject({ seq: 2, kind: "stream.opened", sourceId: stream.id });
+    expect(await fixture.open(header!)).toMatchObject({
+      type: "stream.opened",
+      subject: `bot:${botId}`,
+      spaceId: fixture.spaceId,
+      botId,
+      organizationId: fixture.organizationId,
+      spaceName: "Support",
+      botName: "Researcher",
+    });
+    expect(revision).toMatchObject({ seq: 3, kind: "memory.revision" });
+    // The stream's name says nothing about whose it is.
+    expect(stream.id).not.toContain(botId);
+    expect(stream.id).not.toContain(fixture.spaceId);
+    // The clear entry is sent as it is; the sealed ones are not readable.
+    expect(Buffer.from(ledger.streams.get(stream.id)![0]!.payload).toString()).toBe(key!.payload);
+    expect(Buffer.from(ledger.streams.get(stream.id)![1]!.payload).toString()).not.toContain(
+      "Researcher",
+    );
+  });
+
+  it("announces the new Space key when it rotates, and the old entries still open", async () => {
+    await remember("before");
+    await reconciler()();
+    const rotated = await fixture.keys.rotate(fixture.spaceId);
+
+    await remember("after");
+    await reconciler()();
+
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(stream.entries.map((entry) => entry.kind)).toEqual([
+      "space.key",
+      "stream.opened",
+      "memory.revision",
+      "space.key",
+      "memory.revision",
+    ]);
+    expect(JSON.parse(stream.entries[3]!.payload)).toMatchObject({
+      id: rotated.id,
+      version: rotated.version,
+    });
+    expect(stream.keyId).toBe(rotated.id);
+    expect(await fixture.open(stream.entries[2]!)).toMatchObject({ content: "before" });
+    expect(await fixture.open(stream.entries[4]!)).toMatchObject({ content: "after" });
   });
 
   it("seals each row once, however often it runs", async () => {
@@ -184,22 +184,37 @@ describePostgres("record ledger (PostgreSQL)", () => {
     const reconcile = reconciler();
     await reconcile();
     await reconcile();
-    expect((await streamOf(`bot:${botId}`))!.entries).toHaveLength(1);
+    expect(fixture.recordsOf((await fixture.streamOf(`bot:${botId}`))!.entries)).toHaveLength(1);
 
     const next = await remember("second");
     await reconcile();
-    const stream = (await streamOf(`bot:${botId}`))!;
-    expect(stream.entries.map((entry) => entry.seq)).toEqual([1, 2]);
-    expect(stream.entries[1]!.sourceId).toBe(next.id);
-    expect(ledger.streams.get(stream.id)).toHaveLength(2);
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(stream.entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
+    expect(stream.entries[3]!.sourceId).toBe(next.id);
+    expect(ledger.streams.get(stream.id)).toHaveLength(4);
+  });
+
+  it("does not seal a row the database already holds an entry for", async () => {
+    await remember("already sealed");
+    const reconcile = reconciler();
+    await reconcile();
+    const before = (await fixture.streamOf(`bot:${botId}`))!;
+    // As after an in-place restore: the cursor is behind rows that are already in the stream.
+    await fixture.prisma.recordLedgerCursor.deleteMany();
+
+    await reconcile();
+
+    const after = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(after.entries.map((entry) => entry.id)).toEqual(before.entries.map((entry) => entry.id));
+    expect(after).toMatchObject({ sealedSeq: before.sealedSeq, stoppedAt: null });
   });
 
   it("leaves rows that have not settled for a later pass", async () => {
     await remember("too fresh");
-    await createRecordLedgerReconciler(db, ledger, { settleMs: 60_000 })();
-    expect(await streamOf(`bot:${botId}`)).toBeNull();
+    await createRecordLedgerReconciler(fixture.db, ledger, { settleMs: 60_000 })();
+    expect(await fixture.streamOf(`bot:${botId}`)).toBeNull();
     await reconciler()();
-    expect((await streamOf(`bot:${botId}`))!.sealedSeq).toBe(1);
+    expect((await fixture.streamOf(`bot:${botId}`))!.sealedSeq).toBe(3);
   });
 
   it("keeps sealing while the ledger is down, and catches up when it is back", async () => {
@@ -209,13 +224,13 @@ describePostgres("record ledger (PostgreSQL)", () => {
     await reconcile();
     await remember("second");
     await reconcile();
-    expect(await streamOf(`bot:${botId}`)).toMatchObject({ sealedSeq: 2, shippedSeq: 0 });
+    expect(await fixture.streamOf(`bot:${botId}`)).toMatchObject({ sealedSeq: 4, shippedSeq: 0 });
 
     ledger.unavailable = false;
     await reconcile();
-    const stream = (await streamOf(`bot:${botId}`))!;
-    expect(stream).toMatchObject({ sealedSeq: 2, shippedSeq: 2 });
-    expect(ledger.streams.get(stream.id)).toHaveLength(2);
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(stream).toMatchObject({ sealedSeq: 4, shippedSeq: 4 });
+    expect(ledger.streams.get(stream.id)).toHaveLength(4);
   });
 
   it("sends a stream again to a ledger that lost it", async () => {
@@ -223,15 +238,15 @@ describePostgres("record ledger (PostgreSQL)", () => {
     await remember("second");
     const reconcile = reconciler();
     await reconcile();
-    const before = (await streamOf(`bot:${botId}`))!;
-    expect(before.shippedSeq).toBe(2);
+    const before = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(before.shippedSeq).toBe(4);
 
     ledger.streams.clear();
     await remember("third");
     await reconcile();
 
-    const stream = (await streamOf(`bot:${botId}`))!;
-    expect(stream).toMatchObject({ sealedSeq: 3, shippedSeq: 3, stoppedAt: null });
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(stream).toMatchObject({ sealedSeq: 5, shippedSeq: 5, stoppedAt: null });
     expect(
       ledger.streams.get(stream.id)!.map((entry) => Buffer.from(entry.payload).toString()),
     ).toEqual(stream.entries.map((entry) => entry.payload));
@@ -242,7 +257,7 @@ describePostgres("record ledger (PostgreSQL)", () => {
     await remember("the real first entry");
     const reconcile = reconciler();
     await reconcile();
-    const sealed = (await streamOf(`bot:${botId}`))!;
+    const sealed = (await fixture.streamOf(`bot:${botId}`))!;
     ledger.unavailable = false;
     // The ledger already holds something else at this stream's first position.
     await ledger.append(
@@ -251,7 +266,7 @@ describePostgres("record ledger (PostgreSQL)", () => {
         entries: [
           {
             seq: 1,
-            kind: "memory.revision",
+            kind: "space.key",
             occurredAt: new Date(0),
             payload: new TextEncoder().encode("someone else's entry"),
           },
@@ -263,10 +278,10 @@ describePostgres("record ledger (PostgreSQL)", () => {
 
     await reconcile();
 
-    const stopped = (await streamOf(`bot:${botId}`))!;
+    const stopped = (await fixture.streamOf(`bot:${botId}`))!;
     expect(stopped.shippedSeq).toBe(0);
     expect(stopped.stoppedAt).toBeInstanceOf(Date);
-    const space = (await streamOf(`space:${spaceId}`))!;
+    const space = (await fixture.streamOf(`space:${fixture.spaceId}`))!;
     expect(space.shippedSeq).toBe(space.sealedSeq);
 
     // A stopped stream still seals, and is not sent again until someone clears it.
@@ -278,7 +293,7 @@ describePostgres("record ledger (PostgreSQL)", () => {
     };
     await remember("sealed while stopped");
     await reconcile();
-    expect(await streamOf(`bot:${botId}`)).toMatchObject({ sealedSeq: 2, shippedSeq: 0 });
+    expect(await fixture.streamOf(`bot:${botId}`)).toMatchObject({ sealedSeq: 4, shippedSeq: 0 });
     expect(appends.map((request) => request.stream)).not.toContain(sealed.id);
   });
 
@@ -295,8 +310,8 @@ describePostgres("record ledger (PostgreSQL)", () => {
 
     await reconciler(small)();
 
-    const stream = (await streamOf(`bot:${botId}`))!;
-    const record = await open(stream.entries[0]!);
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    const record = await fixture.open(fixture.recordsOf(stream.entries)[0]!);
     expect(record).toMatchObject({
       type: "memory.revision",
       id: revision.id,
@@ -304,35 +319,35 @@ describePostgres("record ledger (PostgreSQL)", () => {
       contentOmitted: { bytes: content.length },
     });
     expect(record).not.toHaveProperty("content");
-    expect(small.streams.get(stream.id)).toHaveLength(1);
+    expect(small.streams.get(stream.id)).toHaveLength(3);
   });
 
   it("keeps a record that cannot fit in its place as a stub, and carries on", async () => {
     class TinyLedger extends RecordLedgerEmulator {
       override describe() {
         const described = super.describe();
-        return { ...described, capabilities: { ...described.capabilities, maxEntryBytes: 400 } };
+        return { ...described, capabilities: { ...described.capabilities, maxEntryBytes: 600 } };
       }
     }
     const tiny = new TinyLedger();
     const big = await remember("a note ".repeat(200), { path: "big.md" });
-    const next = await audit({ action: "tool.call", actorType: "bot", actorId: botId });
+    const next = await fixture.audit({ action: "tool.call", actorType: "bot", actorId: botId });
 
     await reconciler(tiny)();
 
-    const stream = (await streamOf(`bot:${botId}`))!;
-    expect(stream.entries.map((entry) => [entry.seq, entry.sourceId])).toEqual([
-      [1, big.id],
-      [2, next.id],
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    expect(fixture.recordsOf(stream.entries).map((entry) => [entry.seq, entry.sourceId])).toEqual([
+      [3, big.id],
+      [4, next.id],
     ]);
-    const stub = await open(stream.entries[0]!);
+    const stub = await fixture.open(stream.entries[2]!);
     expect(stub).toMatchObject({
       type: "memory.revision",
       id: big.id,
       omitted: { bytes: expect.any(Number), sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
     });
     expect(stub).not.toHaveProperty("content");
-    expect(tiny.streams.get(stream.id)).toHaveLength(2);
+    expect(tiny.streams.get(stream.id)).toHaveLength(4);
   });
 
   it("stops a stream the ledger rejects as malformed, and does not ask again", async () => {
@@ -349,8 +364,8 @@ describePostgres("record ledger (PostgreSQL)", () => {
     await reconcile();
     await reconcile();
 
-    expect(await streamOf(`bot:${botId}`)).toMatchObject({
-      sealedSeq: 1,
+    expect(await fixture.streamOf(`bot:${botId}`)).toMatchObject({
+      sealedSeq: 3,
       shippedSeq: 0,
       stoppedAt: expect.any(Date),
     });
@@ -360,9 +375,11 @@ describePostgres("record ledger (PostgreSQL)", () => {
   it("drops a bot's stream with the bot", async () => {
     await remember("soon forgotten");
     await reconciler()();
-    const stream = (await streamOf(`bot:${botId}`))!;
-    await prisma.bot.delete({ where: { id: botId } });
-    expect(await streamOf(`bot:${botId}`)).toBeNull();
-    expect(await prisma.recordLedgerEntry.count({ where: { streamId: stream.id } })).toBe(0);
+    const stream = (await fixture.streamOf(`bot:${botId}`))!;
+    await fixture.prisma.bot.delete({ where: { id: botId } });
+    expect(await fixture.streamOf(`bot:${botId}`)).toBeNull();
+    expect(await fixture.prisma.recordLedgerEntry.count({ where: { streamId: stream.id } })).toBe(
+      0,
+    );
   });
 });

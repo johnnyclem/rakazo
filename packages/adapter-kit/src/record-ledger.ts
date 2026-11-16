@@ -26,6 +26,40 @@ export interface RecordLedgerAppendRequest {
   entries: readonly RecordLedgerEntry[];
 }
 
+export interface RecordLedgerReadRequest {
+  stream: string;
+  /** Read the entries after this position; 0 reads from the start. */
+  after: number;
+  /** At most this many; the provider may return fewer. */
+  limit: number;
+}
+
+export interface RecordLedgerReadResult {
+  /** Consecutive from `after + 1`, oldest first. Empty when the stream has nothing past `after`. */
+  entries: RecordLedgerEntry[];
+  /** Where the stream ends now; null when the ledger holds no such stream. */
+  head: RecordLedgerHead | null;
+}
+
+export interface RecordLedgerListRequest {
+  /** Continue after this stream id; omit to start from the first. */
+  after?: string;
+  limit: number;
+}
+
+export interface RecordLedgerStreamSummary {
+  stream: string;
+  head: RecordLedgerHead | null;
+  /** The provider holds the stream but cannot read it back. */
+  unreadable: boolean;
+}
+
+export interface RecordLedgerListResult {
+  streams: RecordLedgerStreamSummary[];
+  /** Pass as `after` for the next page; null at the end. */
+  next: string | null;
+}
+
 export interface RecordLedgerCapabilities {
   /** Runs without the network; only the emulator. */
   offline: boolean;
@@ -50,6 +84,13 @@ export interface RecordLedgerProvider {
    * `RecordLedgerUnavailable` when nothing is known to have been stored.
    */
   append(request: RecordLedgerAppendRequest, signal: AbortSignal): Promise<RecordLedgerHead>;
+  /**
+   * Reads entries back, so a stream can be rebuilt after the deployment that wrote it is gone.
+   * Throws `RecordLedgerUnavailable` when the ledger cannot be reached or refuses the credential.
+   */
+  read(request: RecordLedgerReadRequest, signal: AbortSignal): Promise<RecordLedgerReadResult>;
+  /** The streams the ledger holds, in a stable order, a page at a time. */
+  list(request: RecordLedgerListRequest, signal: AbortSignal): Promise<RecordLedgerListResult>;
 }
 
 /**

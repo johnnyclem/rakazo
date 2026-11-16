@@ -421,6 +421,16 @@ export class ContentKeyRing {
     });
   }
 
+  /**
+   * A key version as the database stores it, still wrapped by its master key. It is safe to keep
+   * elsewhere: only whoever holds the master key can open it.
+   */
+  async wrapped(id: string): Promise<SpaceKeyRecord> {
+    const record = await this.store.byId(id);
+    if (!record) throw new Error("Encrypted content names a space key that no longer exists");
+    return record;
+  }
+
   remember(source: SpaceSource, id: string, context: RowContext) {
     this.rows.set(`${source}:${id}`, context);
   }
