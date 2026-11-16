@@ -1,64 +1,97 @@
-import { createWriteStream } from "node:fs";
+import { createWriteStream, readFileSync, statSync, writeFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { parseArgs } from "node:util";
-import type { ReadEntry, RestoreReport } from "@rakazo/adapters";
+import type { LedgerKeys, ReadEntry, RestoreReport } from "@rakazo/adapters";
 import {
+  assertRecipient,
   contentKeyProviderFromEnv,
   createRecordLedgerProvider,
+  generateOwnerIdentity,
   LedgerStreamReader,
   listLedgerStreams,
+  parseIdentityFile,
   restoreLedgerStream,
   unwrapEnvFromKeyManager,
 } from "@rakazo/adapters";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
-import { createDb, LocalKeyProvider, masterKeysFromEnv } from "@rakazo/db";
+import {
+  createDb,
+  createRowId,
+  LocalKeyProvider,
+  masterKeysFromEnv,
+  runAsSystem,
+} from "@rakazo/db";
 import { bestEffort } from "@rakazo/logging";
 
 loadRootEnv();
 await unwrapEnvFromKeyManager();
 
 const USAGE = `Usage: record-ledger <command>
-  list                 The streams the ledger holds, and who each is for
-  export <stream> [--output <file>]
+  list [--identity-file <file>]
+                       The streams the ledger holds, and who each is for
+  export <stream> [--output <file>] [--identity-file <file>]
                        Write a stream's records, decrypted, as JSON lines
   restore <stream> [--into-bot <id>] [--skip-unreadable] [--dry-run] [--json]
+          [--identity-file <file>]
                        Bring the database up to what the ledger holds for the stream.
                        Run it with the API and worker stopped.
+  keygen --output <file>
+                       Make an owner key: the file holds the private identity, and the
+                       public key it prints is what a Space is sealed to
+  recipient add <age1…> --space <id> [--label <text>]
+  recipient list --space <id>
+  recipient remove <age1…> --space <id>
+                       The owner keys a Space's ledger is sealed to
 
-Reading the ledger needs only RECORD_LEDGER_* and the master keys that sealed it
-(ENCRYPTION_MASTER_KEYS or ENCRYPTION_KEY, or the key manager); restore also needs DATABASE_URL.`;
+Reading the ledger needs RECORD_LEDGER_* and a key that opens it: the master keys that sealed it
+(ENCRYPTION_MASTER_KEYS or ENCRYPTION_KEY, or the key manager), or an owner's --identity-file for
+a ledger sealed to its owner. restore and recipient also need DATABASE_URL.`;
+
+const FLAGS = {
+  output: { type: "string" },
+  "identity-file": { type: "string" },
+  "into-bot": { type: "string" },
+  space: { type: "string" },
+  label: { type: "string" },
+  "skip-unreadable": { type: "boolean" },
+  "dry-run": { type: "boolean" },
+  json: { type: "boolean" },
+} as const;
+
+/** For each command: how many arguments it takes, the flags it allows, and those it requires. */
+const COMMANDS: Record<string, { args: number; flags: string[]; required?: string[] }> = {
+  list: { args: 0, flags: ["identity-file"] },
+  export: { args: 1, flags: ["output", "identity-file"] },
+  restore: {
+    args: 1,
+    flags: ["into-bot", "skip-unreadable", "dry-run", "json", "identity-file"],
+  },
+  keygen: { args: 0, flags: ["output"], required: ["output"] },
+  "recipient add": { args: 1, flags: ["space", "label"], required: ["space"] },
+  "recipient list": { args: 0, flags: ["space"], required: ["space"] },
+  "recipient remove": { args: 1, flags: ["space"], required: ["space"] },
+};
 
 function parseCommand() {
   try {
     const { values, positionals } = parseArgs({
       allowPositionals: true,
-      options: {
-        output: { type: "string" },
-        "into-bot": { type: "string" },
-        "skip-unreadable": { type: "boolean" },
-        "dry-run": { type: "boolean" },
-        json: { type: "boolean" },
-      },
+      options: FLAGS,
     });
-    const [command, stream, ...rest] = positionals;
-    const restoring = command === "restore";
+    const [first, ...rest] = positionals;
+    const command = first === "recipient" ? `recipient ${rest.shift()}` : first;
+    const spec = command ? COMMANDS[command] : undefined;
+    const given = Object.entries(values).filter(([, value]) => value !== undefined);
     if (
       !command ||
-      rest.length ||
-      (command === "list" ? stream !== undefined : !["export", "restore"].includes(command)) ||
-      (command !== "list" && !stream) ||
-      (command !== "export" && values.output !== undefined) ||
-      (!restoring &&
-        (values["into-bot"] !== undefined ||
-          values["skip-unreadable"] ||
-          values["dry-run"] ||
-          values.json)) ||
-      values.output === "" ||
-      values["into-bot"] === ""
+      !spec ||
+      rest.length !== spec.args ||
+      given.some(([name, value]) => !spec.flags.includes(name) || value === "") ||
+      (spec.required ?? []).some((name) => !values[name as keyof typeof values])
     )
       return undefined;
-    return { command, stream, values };
+    return { command, args: rest, values };
   } catch {
     return undefined;
   }
@@ -69,25 +102,52 @@ if (!parsed) {
   process.stderr.write(`${USAGE}\n`);
   process.exit(2);
 }
-const { command, stream, values: flags } = parsed;
-
-const provider = createRecordLedgerProvider();
-if (!provider) {
-  process.stderr.write(
-    "record-ledger: set RECORD_LEDGER_PROVIDER, RECORD_LEDGER_URL and RECORD_LEDGER_TOKEN\n",
-  );
-  process.exit(2);
-}
-// The key manager when one is configured, else the local master keys: both open what sealed it.
-const keyProvider = contentKeyProviderFromEnv() ?? new LocalKeyProvider(masterKeysFromEnv());
+const { command, args, values: flags } = parsed;
+const write = (line: string) => process.stdout.write(`${line}\n`);
 const controller = new AbortController();
 process.once("SIGINT", () => controller.abort());
 process.once("SIGTERM", () => controller.abort());
-const write = (line: string) => process.stdout.write(`${line}\n`);
+
+/** The identities in `--identity-file`; a file others can read is used, with a warning. */
+function identitiesFromFile(): string[] {
+  const file = flags["identity-file"];
+  if (!file) return [];
+  if (statSync(file).mode & 0o077) {
+    process.stderr.write(`warning: ${file} can be read by other users; it holds a private key\n`);
+  }
+  return parseIdentityFile(readFileSync(file, "utf8"));
+}
+
+/**
+ * What opens a ledger here: the key manager or local master keys when any are configured, and
+ * the owner's identities when a file is given. An owner restoring without the host's master keys
+ * needs only the identity.
+ */
+function ledgerKeys(): LedgerKeys {
+  const identities = identitiesFromFile();
+  const hasMasterKeys = Boolean(
+    process.env.ENCRYPTION_MASTER_KEYS?.trim() || process.env.ENCRYPTION_KEY?.trim(),
+  );
+  const keyProvider =
+    contentKeyProviderFromEnv() ??
+    (hasMasterKeys || !identities.length ? new LocalKeyProvider(masterKeysFromEnv()) : undefined);
+  return { keyProvider, identities };
+}
+
+function provider() {
+  const ledger = createRecordLedgerProvider();
+  if (!ledger) {
+    process.stderr.write(
+      "record-ledger: set RECORD_LEDGER_PROVIDER, RECORD_LEDGER_URL and RECORD_LEDGER_TOKEN\n",
+    );
+    process.exit(2);
+  }
+  return ledger;
+}
 
 async function list() {
   let streams = 0;
-  for await (const info of listLedgerStreams(provider!, keyProvider, controller.signal)) {
+  for await (const info of listLedgerStreams(provider(), ledgerKeys(), controller.signal)) {
     streams += 1;
     const entries = `${info.head?.seq ?? 0} entries`;
     if (info.header) {
@@ -115,6 +175,8 @@ function exportLine(entry: ReadEntry): Record<string, unknown> {
       const { id, spaceId, version, masterKeyId } = decoded.envelope;
       return { ...line, key: { id, spaceId, version, masterKeyId } };
     }
+    case "key.recipients":
+      return { ...line, key: { id: decoded.envelope.keyId, sealedToOwner: true } };
     case "stream.opened":
       return { ...line, record: decoded.header };
     case "memory.revision":
@@ -128,7 +190,7 @@ function exportLine(entry: ReadEntry): Record<string, unknown> {
 
 /** JSON lines to stdout, or to a new owner-only file; the export holds plaintext. */
 async function exportRecords(streamId: string) {
-  const reader = new LedgerStreamReader(provider!, keyProvider, streamId, controller.signal);
+  const reader = new LedgerStreamReader(provider(), ledgerKeys(), streamId, controller.signal);
   let records = 0;
   async function* lines() {
     for await (const entry of reader.entries()) {
@@ -181,18 +243,34 @@ function printReport(report: RestoreReport, dryRun: boolean) {
   if (report.skipped) write(`  ${report.skipped}`);
 }
 
-async function restore(streamId: string) {
+/** The database, closed afterwards; `work` runs as the system, as every ledger step does. */
+async function withDatabase<T>(
+  reason: string,
+  work: (db: ReturnType<typeof createDb>) => Promise<T>,
+): Promise<T> {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
-  const { prisma, pool } = createDb(process.env.DATABASE_URL, {
+  const db = createDb(process.env.DATABASE_URL, {
     applicationName: "rakazo-record-ledger",
     keyProvider: contentKeyProviderFromEnv(),
   });
   try {
+    return await runAsSystem(reason, () => work(db));
+  } finally {
+    await bestEffort("disconnect database client", db.prisma.$disconnect());
+    await bestEffort("close database pool", db.pool.end());
+  }
+}
+
+async function restore(streamId: string) {
+  const ledger = provider();
+  const keys = ledgerKeys();
+  await withDatabase("restore the record ledger", async ({ prisma, contentKeys }) => {
     const dryRun = flags["dry-run"] === true;
     const report = await restoreLedgerStream({
       prisma,
-      provider: provider!,
-      keyProvider,
+      provider: ledger,
+      // A key the database holds opens a stream sealed to its owner without asking the owner.
+      keys: { ...keys, known: (id) => contentKeys.find(id) },
       stream: streamId,
       signal: controller.signal,
       intoBot: flags["into-bot"],
@@ -204,16 +282,73 @@ async function restore(streamId: string) {
     if (report.skipped || report.problems.length || report.memory.conflicts.length) {
       process.exitCode = 1;
     }
-  } finally {
-    await bestEffort("disconnect database client", prisma.$disconnect());
-    await bestEffort("close database pool", pool.end());
-  }
+  });
+}
+
+/** A new owner key: the private identity to a new owner-only file, the public key to the screen. */
+async function keygen() {
+  const { identity, recipient } = await generateOwnerIdentity();
+  writeFileSync(
+    flags.output!,
+    `# created: ${new Date().toISOString()}\n# public key: ${recipient}\n${identity}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+  write(
+    `Identity written to ${flags.output}. Keep it: it is the only way to open what is sealed to it.`,
+  );
+  write(`Public key: ${recipient}`);
+}
+
+async function recipient() {
+  const spaceId = flags.space!;
+  await withDatabase("manage record ledger owner keys", async ({ prisma }) => {
+    if (!(await prisma.space.findUnique({ where: { id: spaceId }, select: { id: true } }))) {
+      throw new Error("No such Space");
+    }
+    if (command === "recipient list") {
+      const rows = await prisma.recordLedgerRecipient.findMany({
+        where: { spaceId },
+        orderBy: { createdAt: "asc" },
+      });
+      for (const row of rows) {
+        write(
+          `${row.recipient}  ${row.label ?? ""}  added ${row.createdAt.toISOString()}`.trimEnd(),
+        );
+      }
+      if (!rows.length) write("No owner keys: the ledger is sealed under the master key.");
+      return;
+    }
+    const [key] = args;
+    if (command === "recipient add") {
+      await assertRecipient(key!);
+      const { count } = await prisma.recordLedgerRecipient.createMany({
+        data: [{ id: createRowId(), spaceId, recipient: key!, label: flags.label ?? null }],
+        skipDuplicates: true,
+      });
+      write(
+        count
+          ? "Added. Streams announce their keys to it on the next pass, history included."
+          : "That key is already set.",
+      );
+      return;
+    }
+    const { count } = await prisma.recordLedgerRecipient.deleteMany({
+      where: { spaceId, recipient: key! },
+    });
+    write(
+      count
+        ? "Removed. It is given no more keys, but keeps any it already opened: rotate the Space key to cut it off from new entries."
+        : "That key was not set.",
+    );
+  });
 }
 
 try {
   if (command === "list") await list();
-  else if (command === "export") await exportRecords(stream!);
-  else await restore(stream!);
+  else if (command === "export") await exportRecords(args[0]!);
+  else if (command === "restore") await restore(args[0]!);
+  else if (command === "keygen") await keygen();
+  else await recipient();
 } catch (error) {
   process.stderr.write(
     `record-ledger ${command} failed: ${error instanceof Error ? error.message : "unknown error"}\n`,

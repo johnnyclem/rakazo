@@ -1,5 +1,5 @@
 import type { ContentKeyRing, Prisma, PrismaClient } from "@rakazo/db";
-import { asSystem, ciphertextKeyId, createDb, decryptText } from "@rakazo/db";
+import { asSystem, ciphertextKeyId, createDb, createRowId, decryptText } from "@rakazo/db";
 import { createRecordLedgerReconciler } from "./record-ledger.js";
 import type { RecordLedgerEmulator } from "./record-ledger-emulator.js";
 import { entryLocation, SPACE_KEY_KIND, STREAM_OPENED_KIND } from "./record-ledger-format.js";
@@ -17,6 +17,9 @@ export interface LedgerFixture {
   spaceId: string;
   userId: string;
   newBot(name?: string): Promise<string>;
+  /** Seals the Space's ledger to an owner key. */
+  addRecipient(recipient: string): Promise<void>;
+  removeRecipient(recipient: string): Promise<void>;
   /** A pass of the sealer and shipper in which every row already written counts as settled. */
   reconciler(provider: RecordLedgerEmulator): () => Promise<void>;
   remember(
@@ -65,6 +68,14 @@ export async function createLedgerFixture(databaseUrl: string): Promise<LedgerFi
     otherOrganizationId,
     spaceId,
     userId,
+    async addRecipient(recipient) {
+      await prisma.recordLedgerRecipient.create({
+        data: { id: createRowId(), spaceId, recipient },
+      });
+    },
+    async removeRecipient(recipient) {
+      await prisma.recordLedgerRecipient.deleteMany({ where: { spaceId, recipient } });
+    },
     async newBot(name = "Researcher") {
       bots += 1;
       const id = `ledger-bot-${suffix}-${bots}`;

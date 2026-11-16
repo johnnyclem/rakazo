@@ -431,6 +431,14 @@ export class ContentKeyRing {
     return record;
   }
 
+  /** A key version if the database holds it, else undefined. A key that cannot be unwrapped still throws. */
+  async find(id: string): Promise<DataKey | undefined> {
+    const cached = this.keys.get(id);
+    if (cached) return cached;
+    const record = await this.store.byId(id);
+    return record ? this.unwrap(record) : undefined;
+  }
+
   remember(source: SpaceSource, id: string, context: RowContext) {
     this.rows.set(`${source}:${id}`, context);
   }

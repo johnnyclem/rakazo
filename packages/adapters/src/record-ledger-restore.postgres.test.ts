@@ -26,7 +26,7 @@ describePostgres("record ledger restore (PostgreSQL)", () => {
     restoreLedgerStream({
       prisma: fixture.db,
       provider: ledger,
-      keyProvider: fixture.keys.provider,
+      keys: { keyProvider: fixture.keys.provider },
       stream: options.stream ?? (await streamOf())!.id,
       signal,
       ...options,
@@ -299,11 +299,13 @@ describePostgres("record ledger restore (PostgreSQL)", () => {
     const stream = (await streamOf())!;
 
     const report = await restore({
-      keyProvider: new LocalKeyProvider([{ id: "other", key: new Uint8Array(32).fill(7) }]),
+      keys: {
+        keyProvider: new LocalKeyProvider([{ id: "other", key: new Uint8Array(32).fill(7) }]),
+      },
     });
 
     expect(report.skipped).toMatch(/nothing was restored/);
-    expect(report.problems[0]).toMatchObject({ seq: 1, code: "key" });
+    expect(report.problems[0]).toMatchObject({ seq: 2, code: "key" });
     expect(report.problems[0]!.message).toMatch(/not configured/);
     expect(await streamOf()).toMatchObject({ id: stream.id, sealedSeq: 3 });
     expect(
@@ -317,7 +319,7 @@ describePostgres("record ledger restore (PostgreSQL)", () => {
 
     // The keys come from the environment, not from the database.
     const report = await restore({
-      keyProvider: new LocalKeyProvider(masterKeysFromEnv()),
+      keys: { keyProvider: new LocalKeyProvider(masterKeysFromEnv()) },
       dryRun: true,
     });
 

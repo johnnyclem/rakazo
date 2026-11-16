@@ -5,6 +5,7 @@ import { encryptText, LocalKeyProvider } from "@rakazo/db";
 import { describe, expect, it } from "vitest";
 import { RecordLedgerEmulator } from "./record-ledger-emulator.js";
 import { entryLocation } from "./record-ledger-format.js";
+import { generateOwnerIdentity, wrapKeyToRecipients } from "./record-ledger-owner-keys.js";
 import type { ReadEntry } from "./record-ledger-reader.js";
 import { LedgerStreamReader, listLedgerStreams } from "./record-ledger-reader.js";
 
@@ -144,7 +145,7 @@ describe("LedgerStreamReader", () => {
   it("opens a stream from the ledger and the master keys alone", async () => {
     const { ledger } = await wholeStream();
 
-    const reader = new LedgerStreamReader(ledger, keysA, STREAM, signal);
+    const reader = new LedgerStreamReader(ledger, { keyProvider: keysA }, STREAM, signal);
     const read = await readAll(reader);
 
     expect(reader.problems).toEqual([]);
@@ -181,7 +182,7 @@ describe("LedgerStreamReader", () => {
     ];
     const ledger = await ledgerOf(entries);
 
-    const reader = new LedgerStreamReader(ledger, keysA, STREAM, signal, 2);
+    const reader = new LedgerStreamReader(ledger, { keyProvider: keysA }, STREAM, signal, 2);
     const read = await readAll(reader);
 
     expect(read.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
@@ -191,18 +192,24 @@ describe("LedgerStreamReader", () => {
   it("names a master key it does not have, and each entry that needed the key it protects", async () => {
     const { ledger } = await wholeStream();
 
-    const reader = new LedgerStreamReader(ledger, new LocalKeyProvider([masterB]), STREAM, signal);
+    const reader = new LedgerStreamReader(
+      ledger,
+      { keyProvider: new LocalKeyProvider([masterB]) },
+      STREAM,
+      signal,
+    );
     const read = await readAll(reader);
 
-    expect(reader.problems[0]).toMatchObject({ seq: 1, code: "key" });
-    expect(reader.problems[0]!.message).toMatch(/not configured/);
-    expect(reader.problems.slice(1).map((problem) => [problem.seq, problem.code])).toEqual([
+    // The key's announcement is fine; what is reported is each entry that needed it, with why.
+    expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([
       [2, "key"],
       [3, "key"],
       [4, "key"],
       [5, "key"],
       [6, "key"],
     ]);
+    expect(reader.problems[0]!.message).toMatch(/cannot be opened: .*not configured/);
+    expect(read[0]!.decoded).toMatchObject({ kind: "space.key" });
     expect(read.slice(1).every((entry) => entry.decoded === null)).toBe(true);
   });
 
@@ -219,7 +226,12 @@ describe("LedgerStreamReader", () => {
       sealed("memory.revision", key, revision(6), STREAM, 6),
     ];
 
-    const reader = new LedgerStreamReader(await ledgerOf(entries), keysA, STREAM, signal);
+    const reader = new LedgerStreamReader(
+      await ledgerOf(entries),
+      { keyProvider: keysA },
+      STREAM,
+      signal,
+    );
     const read = await readAll(reader);
 
     expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([
@@ -247,7 +259,7 @@ describe("LedgerStreamReader", () => {
       ...entries.slice(3),
     ]);
 
-    const reader = new LedgerStreamReader(tampered, keysA, STREAM, signal);
+    const reader = new LedgerStreamReader(tampered, { keyProvider: keysA }, STREAM, signal);
     await readAll(reader);
 
     expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([
@@ -261,13 +273,15 @@ describe("LedgerStreamReader", () => {
     const forged = { ...envelope, spaceId: "space-2" };
     const entries = [clear("space.key", forged), sealed("stream.opened", key, header(), STREAM, 2)];
 
-    const reader = new LedgerStreamReader(await ledgerOf(entries), keysA, STREAM, signal);
+    const reader = new LedgerStreamReader(
+      await ledgerOf(entries),
+      { keyProvider: keysA },
+      STREAM,
+      signal,
+    );
     await readAll(reader);
 
-    expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([
-      [1, "key"],
-      [2, "key"],
-    ]);
+    expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([[2, "key"]]);
   });
 
   it("does not trust an entry that does not say what its kind promises", async () => {
@@ -282,7 +296,12 @@ describe("LedgerStreamReader", () => {
       clear("space.key", "{not json"),
     ];
 
-    const reader = new LedgerStreamReader(await ledgerOf(entries), keysA, STREAM, signal);
+    const reader = new LedgerStreamReader(
+      await ledgerOf(entries),
+      { keyProvider: keysA },
+      STREAM,
+      signal,
+    );
     await readAll(reader);
 
     expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([
@@ -301,7 +320,12 @@ describe("LedgerStreamReader", () => {
       clear("tool.run", "something a later version wrote"),
     ];
 
-    const reader = new LedgerStreamReader(await ledgerOf(entries), keysA, STREAM, signal);
+    const reader = new LedgerStreamReader(
+      await ledgerOf(entries),
+      { keyProvider: keysA },
+      STREAM,
+      signal,
+    );
     const read = await readAll(reader);
 
     expect(reader.problems).toEqual([]);
@@ -322,7 +346,7 @@ describe("LedgerStreamReader", () => {
 
     const gap = new LedgerStreamReader(
       serving([served[0]!, served[1]!, served[3]!]),
-      keysA,
+      { keyProvider: keysA },
       STREAM,
       signal,
     );
@@ -331,7 +355,12 @@ describe("LedgerStreamReader", () => {
       { seq: 4, code: "gap", message: "expected entry 3, the ledger returned 4" },
     ]);
 
-    const short = new LedgerStreamReader(serving(served.slice(0, 3)), keysA, STREAM, signal);
+    const short = new LedgerStreamReader(
+      serving(served.slice(0, 3)),
+      { keyProvider: keysA },
+      STREAM,
+      signal,
+    );
     const pages: number[] = [];
     for await (const entry of short.entries()) pages.push(entry.seq);
     expect(pages).toEqual([1, 2, 3]);
@@ -354,7 +383,8 @@ describe("listLedgerStreams", () => {
     );
 
     const listed = [];
-    for await (const info of listLedgerStreams(ledger, keysA, signal)) listed.push(info);
+    for await (const info of listLedgerStreams(ledger, { keyProvider: keysA }, signal))
+      listed.push(info);
 
     expect(listed.map((info) => info.stream)).toEqual(["stream1", "stream2"]);
     expect(listed[0]).toMatchObject({
@@ -364,6 +394,250 @@ describe("listLedgerStreams", () => {
       problems: [],
     });
     expect(listed[1]).toMatchObject({ header: null, unreadable: false });
-    expect(listed[1]!.problems[0]).toMatchObject({ seq: 1, code: "key" });
+    expect(listed[1]!.problems[0]).toMatchObject({ seq: 2, code: "key" });
+  });
+});
+
+/** An entry announcing `key` to its owner, as the sealer writes it. */
+async function ownerKey(
+  key: DataKey,
+  recipients: string[],
+  keyId = key.id,
+): Promise<RecordLedgerEntry> {
+  return clear("key.recipients", {
+    type: "key.recipients",
+    keyId,
+    digest: "d".repeat(32),
+    age: await wrapKeyToRecipients(key, recipients),
+  });
+}
+
+describe("a stream sealed to its owner", () => {
+  /** [owner key, header, two revisions], sealed under a Space key no master key wraps. */
+  async function ownerStream() {
+    const owner = await generateOwnerIdentity();
+    const { key } = await spaceKey();
+    const entries = [
+      await ownerKey(key, [owner.recipient]),
+      sealed("stream.opened", key, header(), STREAM, 2),
+      sealed("memory.revision", key, revision(3), STREAM, 3),
+      sealed("memory.revision", key, revision(4), STREAM, 4),
+    ];
+    return { owner, key, entries, ledger: await ledgerOf(entries) };
+  }
+
+  it("opens with the owner's identity alone, no master key at all", async () => {
+    const { owner, ledger } = await ownerStream();
+
+    const reader = new LedgerStreamReader(ledger, { identities: [owner.identity] }, STREAM, signal);
+    const read = await readAll(reader);
+
+    expect(reader.problems).toEqual([]);
+    expect(read.map((entry) => entry.decoded?.kind)).toEqual([
+      "key.recipients",
+      "stream.opened",
+      "memory.revision",
+      "memory.revision",
+    ]);
+    expect(read[3]!.decoded).toMatchObject({ record: { content: "note 4" } });
+  });
+
+  it("says it is sealed to its owner when no identity is given, and a master key does not help", async () => {
+    const { ledger } = await ownerStream();
+
+    for (const keys of [{}, { keyProvider: keysA }]) {
+      const reader = new LedgerStreamReader(ledger, keys, STREAM, signal);
+      await readAll(reader);
+      expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([
+        [2, "key"],
+        [3, "key"],
+        [4, "key"],
+      ]);
+      expect(reader.problems[0]!.message).toMatch(/sealed to its owner's keys; give an identity/);
+    }
+  });
+
+  it("says so when the identity given is not the owner's", async () => {
+    const { ledger } = await ownerStream();
+    const stranger = await generateOwnerIdentity();
+
+    const reader = new LedgerStreamReader(
+      ledger,
+      { identities: [stranger.identity] },
+      STREAM,
+      signal,
+    );
+    await readAll(reader);
+
+    expect(reader.problems[0]!.message).toMatch(/none of the identities you gave opens it/);
+  });
+
+  it("opens a stream announced both ways with either key", async () => {
+    const owner = await generateOwnerIdentity();
+    const { key, envelope } = await spaceKey();
+    const entries = [
+      clear("space.key", envelope),
+      await ownerKey(key, [owner.recipient]),
+      sealed("stream.opened", key, header(), STREAM, 3),
+      sealed("memory.revision", key, revision(4), STREAM, 4),
+    ];
+    const ledger = await ledgerOf(entries);
+
+    for (const keys of [{ keyProvider: keysA }, { identities: [owner.identity] }]) {
+      const reader = new LedgerStreamReader(ledger, keys, STREAM, signal);
+      await readAll(reader);
+      expect(reader.problems).toEqual([]);
+    }
+  });
+
+  it("opens each key version a stream announced, as the owner holds them all", async () => {
+    const owner = await generateOwnerIdentity();
+    const first = (await spaceKey(keysA, "space-1", 1)).key;
+    const second = (await spaceKey(keysA, "space-1", 2)).key;
+    const entries = [
+      await ownerKey(first, [owner.recipient]),
+      sealed("stream.opened", first, header(), STREAM, 2),
+      sealed("memory.revision", first, revision(3), STREAM, 3),
+      await ownerKey(second, [owner.recipient]),
+      sealed("memory.revision", second, revision(5), STREAM, 5),
+    ];
+
+    const reader = new LedgerStreamReader(
+      await ledgerOf(entries),
+      { identities: [owner.identity] },
+      STREAM,
+      signal,
+    );
+    const read = await readAll(reader);
+
+    expect(reader.problems).toEqual([]);
+    expect(read.map((entry) => entry.decoded?.kind)).toEqual([
+      "key.recipients",
+      "stream.opened",
+      "memory.revision",
+      "key.recipients",
+      "memory.revision",
+    ]);
+  });
+
+  it("opens entries sealed before the stream announced the key to the owner", async () => {
+    const owner = await generateOwnerIdentity();
+    const { key, envelope } = await spaceKey();
+    // Announced to the master key first; the owner is announced to afterwards, as the entries
+    // before it cannot be rewritten.
+    const entries = [
+      clear("space.key", envelope),
+      sealed("stream.opened", key, header(), STREAM, 2),
+      sealed("memory.revision", key, revision(3), STREAM, 3),
+      await ownerKey(key, [owner.recipient]),
+      sealed("memory.revision", key, revision(5), STREAM, 5),
+    ];
+    const ledger = await ledgerOf(entries);
+
+    const reader = new LedgerStreamReader(ledger, { identities: [owner.identity] }, STREAM, signal);
+    const read = await readAll(reader);
+
+    expect(reader.problems).toEqual([]);
+    expect(read.map((entry) => entry.decoded?.kind)).toEqual([
+      "space.key",
+      "stream.opened",
+      "memory.revision",
+      "key.recipients",
+      "memory.revision",
+    ]);
+  });
+
+  it("does not look ahead when the keys came first", async () => {
+    const { key, envelope } = await spaceKey();
+    const entries = [
+      clear("space.key", envelope),
+      sealed("stream.opened", key, header(), STREAM, 2),
+      sealed("memory.revision", key, revision(3), STREAM, 3),
+    ];
+    const ledger = await ledgerOf(entries);
+    let reads = 0;
+    const counting = {
+      read: (request: Parameters<typeof ledger.read>[0], on: AbortSignal) => {
+        reads += 1;
+        return ledger.read(request, on);
+      },
+    } as unknown as RecordLedgerProvider;
+
+    await readAll(new LedgerStreamReader(counting, { keyProvider: keysA }, STREAM, signal));
+
+    expect(reads).toBe(1);
+  });
+
+  it("does not take a key an announcement claims to be, only the one it wraps", async () => {
+    const owner = await generateOwnerIdentity();
+    const { key } = await spaceKey();
+    // An announcement labelled as another key: what it wraps says what it is.
+    const entries = [
+      await ownerKey(key, [owner.recipient], "some-other-key"),
+      sealed("stream.opened", key, header(), STREAM, 2),
+    ];
+
+    const reader = new LedgerStreamReader(
+      await ledgerOf(entries),
+      { identities: [owner.identity] },
+      STREAM,
+      signal,
+    );
+    await readAll(reader);
+
+    expect(reader.problems.map((problem) => [problem.seq, problem.code])).toEqual([[2, "key"]]);
+  });
+
+  it("falls back to a key the database holds, and says why when it cannot", async () => {
+    const { key } = await spaceKey();
+    const entries = [
+      clear("tool.run", "no announcement of any key"),
+      sealed("stream.opened", key, header(), STREAM, 2),
+    ];
+    const ledger = await ledgerOf(entries);
+
+    const found = new LedgerStreamReader(
+      ledger,
+      { known: async (id) => (id === key.id ? key : undefined) },
+      STREAM,
+      signal,
+    );
+    await readAll(found);
+    expect(found.problems).toEqual([]);
+
+    const missing = new LedgerStreamReader(
+      ledger,
+      { known: async () => undefined },
+      STREAM,
+      signal,
+    );
+    await readAll(missing);
+    expect(missing.problems[0]!.message).toMatch(/which the stream never opened/);
+
+    const broken = new LedgerStreamReader(
+      ledger,
+      {
+        known: async () => {
+          throw new Error("the master key is gone");
+        },
+      },
+      STREAM,
+      signal,
+    );
+    await readAll(broken);
+    expect(broken.problems[0]!.message).toMatch(/cannot be opened: the master key is gone/);
+  });
+
+  it("lists the stream with who it is for once the identity is given", async () => {
+    const { owner, ledger } = await ownerStream();
+
+    const without = [];
+    for await (const info of listLedgerStreams(ledger, {}, signal)) without.push(info);
+    const withIdentity = [];
+    for await (const info of listLedgerStreams(ledger, { identities: [owner.identity] }, signal))
+      withIdentity.push(info);
+
+    expect(without[0]).toMatchObject({ header: null });
+    expect(withIdentity[0]).toMatchObject({ header: { botName: "Researcher" }, problems: [] });
   });
 });

@@ -9,6 +9,9 @@ import { z } from "zod";
  *
  * - `space.key` (in the clear): a Space key as the database stores it, wrapped by a master key.
  *   Only someone holding the master key can open it.
+ * - `key.recipients` (in the clear): a Space key wrapped to the keys its owner holds, as an `age`
+ *   file. Used instead of `space.key` when the Space has owner keys, and for older key versions
+ *   when they are added, so the owner can open the whole stream.
  * - `stream.opened` (sealed): which bot or Space the stream is for.
  * - `memory.revision` and `audit.event` (sealed): the records themselves.
  *
@@ -16,6 +19,7 @@ import { z } from "zod";
  * wherever it is read and fails to open if it is moved.
  */
 export const SPACE_KEY_KIND = "space.key";
+export const KEY_RECIPIENTS_KIND = "key.recipients";
 export const STREAM_OPENED_KIND = "stream.opened";
 export const MEMORY_REVISION_KIND = "memory.revision";
 export const AUDIT_EVENT_KIND = "audit.event";
@@ -40,6 +44,19 @@ export const spaceKeyEnvelopeSchema = z.object({
   wrappedKey: z.string().min(1),
 });
 export type SpaceKeyEnvelope = z.infer<typeof spaceKeyEnvelopeSchema>;
+
+/**
+ * A Space key for its owner. `age` is the wrapped key (base64url), which says for itself which
+ * key it is; `keyId` and `digest` are only labels around it, for finding the right entry.
+ */
+export const keyRecipientsEnvelopeSchema = z.object({
+  type: z.literal(KEY_RECIPIENTS_KIND),
+  keyId: z.string().min(1),
+  /** Identifies the set of recipients it was wrapped to. */
+  digest: z.string().min(1),
+  age: z.string().min(1),
+});
+export type KeyRecipientsEnvelope = z.infer<typeof keyRecipientsEnvelopeSchema>;
 
 /** `bot:<id>` for a bot's own stream, `space:<id>` for what no single bot owns. */
 export const streamHeaderSchema = z.object({
