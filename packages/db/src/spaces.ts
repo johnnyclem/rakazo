@@ -5,6 +5,7 @@ import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import type { PageShareSecret } from "./page-shares.js";
 import { deletePageShareSecrets } from "./page-shares.js";
+import { inheritRecordLedgerKeys } from "./record-ledger-recipients.js";
 import { IsolationError } from "./scope.js";
 import { releasePendingSpacePayments } from "./spending.js";
 import { withTransactionRetry } from "./transaction-retry.js";
@@ -180,6 +181,12 @@ export async function createSpaceForMember(
           spaceId,
           userId: input.userId,
           memoryContent: "# Space memory\n\n",
+        });
+        // Before anything can be recorded in it, so its ledger never begins under the master key.
+        await inheritRecordLedgerKeys(tx, {
+          userId: input.userId,
+          spaceId,
+          fromSpaceId: input.currentSpaceId,
         });
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

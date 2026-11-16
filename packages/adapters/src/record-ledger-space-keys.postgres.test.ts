@@ -1,9 +1,11 @@
 import { MAX_OWNER_KEYS } from "@rakazo/contracts";
+import { createSpaceForMember } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { LedgerFixture } from "./record-ledger.test-support.js";
 import { createLedgerFixture } from "./record-ledger.test-support.js";
 import { RecordLedgerEmulator } from "./record-ledger-emulator.js";
 import { generateOwnerIdentity } from "./record-ledger-owner-keys.js";
+import { LedgerStreamReader } from "./record-ledger-reader.js";
 import {
   addOwnerKey,
   listOwnerKeys,
@@ -85,33 +87,34 @@ describePostgres("a Space's owner keys (PostgreSQL)", () => {
       await other.close();
     }
   });
+  let ownerSeq = 0;
+  /** A user who is `role` of `spaceId`, as signup makes the owner of a first Space. */
+  async function userIn(spaceId: string, role: "owner" | "member") {
+    ownerSeq += 1;
+    const userId = `${fixture.userId}-${role}-${ownerSeq}`;
+    const { prisma, organizationId } = fixture;
+    await prisma.user.create({
+      data: { id: userId, name: "Someone", email: `${userId}@rakazo.test` },
+    });
+    await prisma.member.upsert({
+      where: { organizationId_userId: { organizationId, userId } },
+      update: {},
+      create: { id: `member-${userId}`, organizationId, userId, role, createdAt: new Date() },
+    });
+    await prisma.spaceMember.create({
+      data: {
+        id: `sm-${userId}-${spaceId}`,
+        organizationId,
+        spaceId,
+        userId,
+        role,
+        createdAt: new Date(),
+      },
+    });
+    return userId;
+  }
+
   describe("asking a new account for a key", () => {
-    let ownerSeq = 0;
-    /** A user who is `role` of `spaceId`, as signup makes the owner of a first Space. */
-    async function userIn(spaceId: string, role: "owner" | "member") {
-      ownerSeq += 1;
-      const userId = `${fixture.userId}-${role}-${ownerSeq}`;
-      const { prisma, organizationId } = fixture;
-      await prisma.user.create({
-        data: { id: userId, name: "Someone", email: `${userId}@rakazo.test` },
-      });
-      await prisma.member.upsert({
-        where: { organizationId_userId: { organizationId, userId } },
-        update: {},
-        create: { id: `member-${userId}`, organizationId, userId, role, createdAt: new Date() },
-      });
-      await prisma.spaceMember.create({
-        data: {
-          id: `sm-${userId}-${spaceId}`,
-          organizationId,
-          spaceId,
-          userId,
-          role,
-          createdAt: new Date(),
-        },
-      });
-      return userId;
-    }
     const offer = (userId: string, spaceId = fixture.spaceId) =>
       shouldOfferOwnerKey(fixture.prisma, { spaceId, userId });
 
@@ -155,6 +158,46 @@ describePostgres("a Space's owner keys (PostgreSQL)", () => {
       });
       expect(await offer(owner)).toBe(false);
       expect(await offer(owner, second)).toBe(false);
+    });
+  });
+  describe("a Space made later", () => {
+    it("begins its ledger sealed to the key its owner holds, so only that key opens it", async () => {
+      const owner = await userIn(fixture.spaceId, "owner");
+      const key = await generateOwnerIdentity();
+      await add(key.recipient);
+
+      const later = await createSpaceForMember(fixture.prisma, {
+        currentSpaceId: fixture.spaceId,
+        userId: owner,
+        name: "Later",
+      });
+      // What the route records the moment the Space exists.
+      await fixture.audit({ action: "space.created", spaceId: later.id, actorId: owner });
+      await fixture.reconciler(ledger)();
+
+      const stream = (await fixture.streamOf(`space:${later.id}`))!;
+      expect(stream.entries.map((entry) => entry.kind)).toEqual([
+        "key.recipients",
+        "stream.opened",
+        "audit.event",
+      ]);
+      expect((await listOwnerKeys(fixture.prisma, later.id)).earlier).toBe(false);
+
+      const read = async (keys: ConstructorParameters<typeof LedgerStreamReader>[1]) => {
+        const reader = new LedgerStreamReader(
+          ledger,
+          keys,
+          stream.id,
+          new AbortController().signal,
+        );
+        const entries = [];
+        for await (const entry of reader.entries()) entries.push(entry);
+        return { entries, problems: reader.problems };
+      };
+      expect((await read({ identities: [key.identity] })).problems).toEqual([]);
+      expect((await read({ keyProvider: fixture.keys.provider })).problems.length).toBeGreaterThan(
+        0,
+      );
     });
   });
 });

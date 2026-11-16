@@ -5,6 +5,7 @@ import { GUEST_ROLE, LIVE_ORGANIZATION as LIVE } from "./billing.js";
 import { createOrganizationWithDefaultSpace } from "./bootstrap-user.js";
 import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
+import { inheritRecordLedgerKeys } from "./record-ledger-recipients.js";
 import { IsolationError } from "./scope.js";
 import {
   claimSpaceForDeletion,
@@ -61,12 +62,14 @@ export async function createOrganizationForUser(
         where: { userId: input.userId, role: OWNER, organization: LIVE },
       });
       if (owned >= MAX_ORGANIZATIONS_PER_USER) throw new OrganizationLimitError();
-      await createOrganizationWithDefaultSpace(tx, {
+      const spaceId = await createOrganizationWithDefaultSpace(tx, {
         userId: input.userId,
         orgId,
         name,
         slug: `org-${randomUUID()}`,
       });
+      // As for any Space the person makes: sealed to the key they hold from its first record.
+      await inheritRecordLedgerKeys(tx, { userId: input.userId, spaceId });
     }),
   );
   return { id: orgId, name, defaultSpaceId: orgId };
