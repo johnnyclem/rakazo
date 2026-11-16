@@ -67,6 +67,7 @@ export function SettingsOverlay({
   computerSettingsEnabled = false,
   messagingEnabled = false,
   paymentWalletProvider = null,
+  recordLedgerEnabled = false,
   memoryConfig,
   onMemoryConfigChange,
   onClose,
@@ -106,6 +107,8 @@ export function SettingsOverlay({
   messagingEnabled?: boolean;
   /** The wallet this deployment lets bots spend from; none hides Wallet. */
   paymentWalletProvider?: { id: string; name: string } | null;
+  /** The deployment keeps a record ledger, so a space's owner can hold the key to it. */
+  recordLedgerEnabled?: boolean;
   memoryConfig: SpaceMemoryConfig | null | undefined;
   onMemoryConfigChange: (config: SpaceMemoryConfig | null) => void;
   onClose: () => void;
@@ -437,6 +440,7 @@ export function SettingsOverlay({
                       onLeft={(activeSpaceId) => onLeftSpace?.(space.id, activeSpaceId)}
                       onClose={requestClose}
                       onBusyChange={setVoiceBusy}
+                      recordLedgerEnabled={recordLedgerEnabled}
                     />
                   ) : null}
                   {section === "organization" ? (

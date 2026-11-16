@@ -97,6 +97,7 @@ export async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     paymentWalletProvider: deps.paymentWallet
       ? { id: deps.paymentWallet.describe().id, name: deps.paymentWallet.displayName }
       : null,
+    recordLedgerEnabled: Boolean(deps.recordLedgerEnabled),
   };
 }
 

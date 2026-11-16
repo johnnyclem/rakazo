@@ -202,6 +202,7 @@ import {
   SpendingStatusSchema,
 } from "./payments.js";
 import { MessageReactionSchema } from "./reactions.js";
+import { OwnerKeyRecipientSchema, RecordLedgerKeysSchema } from "./record-ledger-keys.js";
 import { RoutineWatchSchema } from "./routine-watch.js";
 import {
   ROUTINE_HISTORY_PAGE_SIZE,
@@ -1608,6 +1609,18 @@ export const appContract = {
     /** Starts a sign-in the user finishes with the provider; `status` then reports it. */
     connect: oc.output(PaymentWalletStatusSchema),
     disconnect: oc.output(PaymentWalletStatusSchema),
+  },
+  /** The keys the current Space's record ledger is sealed to; its owner only. */
+  recordLedger: {
+    keys: oc.output(RecordLedgerKeysSchema),
+    /** Adding a key already held changes nothing. */
+    addKey: oc
+      .input(z.object({ recipient: OwnerKeyRecipientSchema }).strict())
+      .output(RecordLedgerKeysSchema),
+    /** Removing a key not held changes nothing. */
+    removeKey: oc
+      .input(z.object({ recipient: OwnerKeyRecipientSchema }).strict())
+      .output(RecordLedgerKeysSchema),
   },
   voice: {
     catalog: oc.output(z.array(VoiceCatalogEntrySchema)),

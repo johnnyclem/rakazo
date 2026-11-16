@@ -135,6 +135,12 @@ including every earlier key version, so the owner can open the history as well a
 New streams are sealed to them alone, with nothing a master key could open. Restoring then needs
 only the owner's identity (`--identity-file owner.key`): not the host's master key, not the database.
 
+Space owners can do this themselves in the app, without the command line: **Settings → Space →
+Backup key**, shown only on a deployment that keeps a ledger. The key is made in the browser, so the
+private half never reaches the server, and is offered as a file to save. The Space gets the public
+half only once the owner has downloaded or copied it. The same page lists the Space's keys and
+removes them; it is the same list as `recipient list`, up to 5 keys per Space.
+
 The list of owner keys is the whole policy. One key is self-custody: lose the file and nobody can
 open that ledger. Adding a second key the owner trusts, or a recovery key the operator keeps
 offline, makes it recoverable. No keys keeps the master-key behaviour above.
@@ -147,7 +153,10 @@ What this protects, and what it does not:
   database, and the host seals what it writes. An owner key makes the backup the owner's; it does
   not make the host blind.
 - What was sealed before owner keys were added stays readable with the master key as well: a ledger
-  cannot be rewritten.
+  cannot be rewritten. That includes what a stream that began under the master key gets
+  afterwards, since it still uses the key it announced then. Only streams that begin after the
+  Space has owner keys, such as every stream of a Space whose owner made a key first, are sealed to
+  them alone. The app says so when it applies, and `recipient list` does not.
 - Removing an owner key stops it being given new keys, but it keeps any it already opened. To cut
   it off from new entries, rotate the Space key to a new version (`content-encryption rotate
   --reencrypt`).
@@ -194,7 +203,8 @@ Consider this before turning the ledger on where people expect a deleted note to
 
 ## Not yet
 
-Nothing in the apps shows a bot's ledger status, and restoring and owner keys are operator
-commands: there is no screen where an owner generates a key or adds it, and no key derived from a
-wallet. Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
+Nothing in the apps shows a bot's ledger status, and restoring is an operator command. An owner
+makes and removes keys on web and desktop; the mobile app does not, because holding a private key
+there needs its own place to keep it. There is no key derived from a wallet, and adding a key does
+not rotate the Space key, so a Space that already has streams stays readable by the master key. Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
 is noticed only when the database survives to compare (it warns), or by verifying the anchor.

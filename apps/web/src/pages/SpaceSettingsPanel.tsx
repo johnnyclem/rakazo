@@ -1,6 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { Button, Input } from "@rakazo/ui-web";
 import { useEffect, useId, useState } from "react";
+import { BackupKeySettings } from "../components/BackupKeySettings";
 import { SettingsGroup, SettingsRow } from "../components/SettingsRows";
 import { SpaceMembersSettings } from "../components/SpaceMembersSettings";
 import { SpaceSettingOverrides } from "./SpaceSettingOverrides";
@@ -18,6 +19,7 @@ export function SpaceSettingsPanel({
   onLeft,
   onClose,
   onBusyChange,
+  recordLedgerEnabled = false,
 }: {
   space: SettingsSpace;
   onRename: (name: string) => Promise<void>;
@@ -26,6 +28,8 @@ export function SpaceSettingsPanel({
   onLeft: (activeSpaceId: string) => void;
   onClose: () => void;
   onBusyChange?: (busy: boolean) => void;
+  /** The deployment keeps a ledger of this space's memory, so its owner can hold the key to it. */
+  recordLedgerEnabled?: boolean;
 }) {
   const { t } = useLingui();
   const nameId = useId();
@@ -109,6 +113,7 @@ export function SpaceSettingsPanel({
         </SettingsGroup>
       ) : null}
       <SpaceMembersSettings space={space} onLeft={onLeft} />
+      {recordLedgerEnabled && space.canRename ? <BackupKeySettings /> : null}
       <SpaceSettingOverrides onClose={onClose} onBusyChange={setOverridesBusy} />
       {space.canDelete ? (
         <Button

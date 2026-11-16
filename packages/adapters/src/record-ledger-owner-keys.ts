@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ClientError } from "@rakazo/core";
 import type { DataKey } from "@rakazo/db";
 import { z } from "zod";
 
@@ -27,13 +28,21 @@ export function recipientSetDigest(recipients: readonly string[]): string {
   return createHash("sha256").update(sorted.join("\n")).digest("hex").slice(0, 32);
 }
 
+/** What was given as an owner key is not an age public key. */
+export class InvalidOwnerKeyError extends ClientError {
+  constructor() {
+    super("BAD_REQUEST", "Not an age public key: expected a value that starts with age1");
+    this.name = "InvalidOwnerKeyError";
+  }
+}
+
 /** Throws unless `recipient` is an age public key. */
 export async function assertRecipient(recipient: string): Promise<void> {
   const age = await loadAge();
   try {
     new age.Encrypter().addRecipient(recipient);
   } catch {
-    throw new Error("Not an age public key: expected a value that starts with age1");
+    throw new InvalidOwnerKeyError();
   }
 }
 
