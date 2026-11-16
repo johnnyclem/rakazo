@@ -2,24 +2,17 @@ import { createHash } from "node:crypto";
 import type { RecordLedgerEntry, RecordLedgerProvider } from "@rakazo/adapter-kit";
 import { RecordLedgerConflict, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
 import { deadlineSignal } from "@rakazo/core";
-import type { ContentKeyRing, DataKey, Prisma, PrismaClient } from "@rakazo/db";
-import {
-  auditEventDto,
-  contentEncryptionOf,
-  createRowId,
-  encryptText,
-  runAsSystem,
-} from "@rakazo/db";
+import type { ContentKeyRing, Prisma, PrismaClient } from "@rakazo/db";
+import { auditEventDto, contentEncryptionOf, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { advisoryLock } from "./advisory-lock.js";
-import type { SpaceKeyEnvelope, StreamHeader } from "./record-ledger-format.js";
+import { AUDIT_EVENT_KIND, MEMORY_REVISION_KIND } from "./record-ledger-format.js";
 import {
-  AUDIT_EVENT_KIND,
-  entryLocation,
-  MEMORY_REVISION_KIND,
-  SPACE_KEY_KIND,
-  STREAM_OPENED_KIND,
-} from "./record-ledger-format.js";
+  announceRecipientChanges,
+  recipientsBySpace,
+  StreamWriter,
+  seal,
+} from "./record-ledger-streams.js";
 
 /**
  * Rows commit a moment apart across instances. Sealing only rows older than this keeps a
@@ -178,57 +171,6 @@ interface SealOptions {
   at: Date;
 }
 
-/** A stream being written to: where it ends now, and what it still has to say about itself. */
-interface OpenStream {
-  id: string;
-  sealedSeq: number;
-  /** The Space key the stream last announced. */
-  keyId: string | null;
-  /** Set only for a stream opened in this pass, until its header is written. */
-  header?: StreamHeader;
-}
-
-/** The stream for `subject`, opened if it is new. Null when its Space is already gone. */
-async function openStream(
-  tx: Prisma.TransactionClient,
-  subject: string,
-  target: { spaceId: string; botId: string | null },
-  at: Date,
-): Promise<OpenStream | null> {
-  const found = await tx.recordLedgerStream.findUnique({
-    where: { subject },
-    select: { id: true, sealedSeq: true, keyId: true },
-  });
-  if (found) return found;
-  const [space, bot] = await Promise.all([
-    tx.space.findUnique({
-      where: { id: target.spaceId },
-      select: { name: true, organizationId: true },
-    }),
-    target.botId
-      ? tx.bot.findUnique({ where: { id: target.botId }, select: { name: true } })
-      : null,
-  ]);
-  if (!space) return null;
-  const created = await tx.recordLedgerStream.create({
-    data: { id: createRowId(), subject, spaceId: target.spaceId, botId: target.botId },
-    select: { id: true, sealedSeq: true, keyId: true },
-  });
-  return {
-    ...created,
-    header: {
-      type: STREAM_OPENED_KIND,
-      subject,
-      spaceId: target.spaceId,
-      botId: target.botId,
-      organizationId: space.organizationId,
-      spaceName: space.name,
-      botName: bot?.name ?? null,
-      openedAt: at.toISOString(),
-    },
-  };
-}
-
 /** The entries a batch of rows has already been sealed into, so none is sealed twice. */
 async function alreadySealed(
   tx: Prisma.TransactionClient,
@@ -243,9 +185,6 @@ async function alreadySealed(
   });
   return new Set(sealed.map((entry) => `${entry.kind}:${entry.sourceId}`));
 }
-
-const seal = (key: DataKey, stream: string, seq: number, record: unknown) =>
-  encryptText(key, entryLocation(stream, seq), JSON.stringify(record));
 
 /**
  * Seals one batch of one source and moves its cursor, atomically: a row is either sealed
@@ -267,66 +206,21 @@ async function sealBatch(
       if (!last) return 0;
 
       const sealed = await alreadySealed(tx, rows);
-      const streams = new Map<string, OpenStream>();
-      const entries: Prisma.RecordLedgerEntryCreateManyInput[] = [];
-      const add = (
-        stream: OpenStream,
-        entry: { kind: string; sourceId: string; occurredAt: Date },
-        payload: (seq: number) => string,
-      ) => {
-        stream.sealedSeq += 1;
-        entries.push({
-          id: createRowId(),
-          streamId: stream.id,
-          seq: stream.sealedSeq,
-          ...entry,
-          payload: payload(stream.sealedSeq),
-        });
-      };
+      const recipients = await recipientsBySpace(
+        tx,
+        rows.flatMap((row) => (row.stream ? [row.stream.spaceId] : [])),
+      );
+      const writer = new StreamWriter(tx, options.ring, options.at);
 
       for (const row of rows) {
         if (!row.stream || sealed.has(`${row.kind}:${row.sourceId}`)) continue;
         const { spaceId, botId } = row.stream;
-        const subject = botId ? `bot:${botId}` : `space:${spaceId}`;
-        let stream = streams.get(subject);
-        if (!stream) {
-          const opened = await openStream(tx, subject, row.stream, options.at);
-          if (!opened) continue;
-          stream = opened;
-          streams.set(subject, stream);
-        }
+        const stream = await writer.open(botId ? `bot:${botId}` : `space:${spaceId}`, row.stream);
+        if (!stream) continue;
         const key = await options.ring.current(spaceId);
+        await writer.prepare(stream, key, recipients.get(spaceId) ?? []);
 
-        // A stream carries what it takes to open it: the Space key, wrapped by a master key,
-        // and who the stream is for. Without them the ledger alone could not be read.
-        if (stream.keyId !== key.id) {
-          const { id, version, masterKeyId, wrappedKey } = await options.ring.wrapped(key.id);
-          const envelope: SpaceKeyEnvelope = {
-            type: SPACE_KEY_KIND,
-            id,
-            spaceId,
-            version,
-            masterKeyId,
-            wrappedKey,
-          };
-          add(
-            stream,
-            { kind: SPACE_KEY_KIND, sourceId: `${stream.id}:${key.id}`, occurredAt: options.at },
-            () => JSON.stringify(envelope),
-          );
-          stream.keyId = key.id;
-        }
-        const { header } = stream;
-        if (header) {
-          add(
-            stream,
-            { kind: STREAM_OPENED_KIND, sourceId: stream.id, occurredAt: options.at },
-            (seq) => seal(key, stream.id, seq, header),
-          );
-          delete stream.header;
-        }
-
-        add(
+        writer.add(
           stream,
           { kind: row.kind, sourceId: row.sourceId, occurredAt: row.createdAt },
           (seq) => {
@@ -339,13 +233,7 @@ async function sealBatch(
           },
         );
       }
-      if (entries.length) await tx.recordLedgerEntry.createMany({ data: entries });
-      for (const stream of streams.values()) {
-        await tx.recordLedgerStream.update({
-          where: { id: stream.id },
-          data: { sealedSeq: stream.sealedSeq, keyId: stream.keyId },
-        });
-      }
+      await writer.flush();
       const position = { lastCreatedAt: last.createdAt, lastId: last.sourceId };
       await tx.recordLedgerCursor.upsert({
         where: { source },
@@ -359,6 +247,10 @@ async function sealBatch(
 }
 
 async function sealNew(prisma: PrismaClient, options: SealOptions): Promise<void> {
+  // A stream owed an announcement to new owner keys gets it even if nothing new happens in it.
+  for (let owed = MAX_STREAMS_PER_PASS; owed === MAX_STREAMS_PER_PASS; ) {
+    owed = await announceRecipientChanges(prisma, options.ring, options.at);
+  }
   for (const source of Object.keys(SOURCES)) {
     for (let batch = 0; batch < MAX_SEAL_BATCHES_PER_PASS; batch++) {
       if ((await sealBatch(prisma, source, options)) < SEAL_BATCH) break;

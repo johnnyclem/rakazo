@@ -1,4 +1,4 @@
-import type { KeyProvider, RecordLedgerHead, RecordLedgerProvider } from "@rakazo/adapter-kit";
+import type { RecordLedgerHead, RecordLedgerProvider } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { createRowId, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -7,13 +7,20 @@ import type {
   MemoryRevisionRecord,
   StreamHeader,
 } from "./record-ledger-format.js";
-import type { DecodedRecord, ReadEntry, StreamProblem } from "./record-ledger-reader.js";
+import { recipientSetDigest } from "./record-ledger-owner-keys.js";
+import type {
+  DecodedRecord,
+  LedgerKeys,
+  ReadEntry,
+  StreamProblem,
+} from "./record-ledger-reader.js";
 import { LedgerStreamReader } from "./record-ledger-reader.js";
 
 export interface RestoreOptions {
   prisma: PrismaClient;
   provider: RecordLedgerProvider;
-  keyProvider: KeyProvider;
+  /** What opens the stream: master keys, an owner's identities, or keys the database holds. */
+  keys: LedgerKeys;
   stream: string;
   signal: AbortSignal;
   /**
@@ -73,7 +80,7 @@ interface Destination {
 export async function restoreLedgerStream(options: RestoreOptions): Promise<RestoreReport> {
   const report = emptyReport(options.stream);
   const reader = () =>
-    new LedgerStreamReader(options.provider, options.keyProvider, options.stream, options.signal);
+    new LedgerStreamReader(options.provider, options.keys, options.stream, options.signal);
 
   // Unless asked to skip them, an entry that does not open stops the whole restore before any
   // write, so a partial history is never mistaken for the whole one.
@@ -127,7 +134,7 @@ async function apply(
           linker = await StreamLinker.begin(prisma, stream, decoded.header, report.warnings);
           for (const waiting of early) await linker.take(waiting);
         }
-      } else if (decoded.kind === "space.key") {
+      } else if (decoded.kind === "space.key" || decoded.kind === "key.recipients") {
         // The Space key comes before the header; it is linked once the stream is placed.
         early.push(entry);
         continue;
@@ -366,6 +373,7 @@ async function restoreAuditEvent(
 class StreamLinker {
   private active = true;
   private keyId: string | null;
+  private recipientsDigest: string | null;
   private last = 0;
 
   private constructor(
@@ -373,10 +381,12 @@ class StreamLinker {
     private readonly stream: string,
     private readonly sealedSeq: number,
     private readonly shippedSeq: number,
-    keyId: string | null,
+    announced: { keyId: string | null; recipientsDigest: string | null },
+    private readonly spaceId: string,
     private readonly warnings: string[],
   ) {
-    this.keyId = keyId;
+    this.keyId = announced.keyId;
+    this.recipientsDigest = announced.recipientsDigest;
   }
 
   static async begin(
@@ -393,7 +403,8 @@ class StreamLinker {
       stream,
       existing?.sealedSeq ?? 0,
       existing?.shippedSeq ?? 0,
-      existing?.keyId ?? null,
+      { keyId: existing?.keyId ?? null, recipientsDigest: existing?.recipientsDigest ?? null },
+      header.spaceId,
       warnings,
     );
     if (existing && existing.id !== stream) {
@@ -443,7 +454,14 @@ class StreamLinker {
       }
       return;
     }
-    if (entry.decoded.kind === "space.key") this.keyId = entry.decoded.envelope.id;
+    // What the stream last announced, and to whom, is what its next entries must carry on from.
+    if (entry.decoded.kind === "space.key") {
+      this.keyId = entry.decoded.envelope.id;
+      this.recipientsDigest = null;
+    } else if (entry.decoded.kind === "key.recipients") {
+      this.keyId = entry.decoded.envelope.keyId;
+      this.recipientsDigest = entry.decoded.envelope.digest;
+    }
     // The entry and the stream's own count of them move together, so the database never holds an
     // entry past the end of its stream, whatever stops the restore.
     await this.prisma.$transaction(async (tx) => {
@@ -460,10 +478,32 @@ class StreamLinker {
       });
       await tx.recordLedgerStream.update({
         where: { id: this.stream },
-        data: { sealedSeq: entry.seq, keyId: this.keyId },
+        data: {
+          sealedSeq: entry.seq,
+          keyId: this.keyId,
+          recipientsDigest: this.recipientsDigest,
+        },
       });
     });
     this.last = entry.seq;
+  }
+
+  /**
+   * The owner keys a Space is sealed to are kept in the database, so a backup older than they are
+   * does not have them. A stream sealed to them would then be announced under the master key at
+   * the next pass: protection lost without a word. Say so while there is still time to add them.
+   */
+  private async warnIfOwnerKeysLost(): Promise<void> {
+    if (!this.recipientsDigest) return;
+    const keys = await this.prisma.recordLedgerRecipient.findMany({
+      where: { spaceId: this.spaceId },
+      select: { recipient: true },
+    });
+    const now = keys.length ? recipientSetDigest(keys.map((key) => key.recipient)) : null;
+    if (now === this.recipientsDigest) return;
+    this.warnings.push(
+      "This stream is sealed to owner keys the database does not have for the Space. Unless they are added again (record-ledger recipient add) before the services start, the next pass announces its key under the master key instead.",
+    );
   }
 
   /** Points the stream at the ledger's end. Whether it was fully linked. */
@@ -486,9 +526,11 @@ class StreamLinker {
         shippedDigest: head.digest,
         shippedAt: at,
         keyId: this.keyId,
+        recipientsDigest: this.recipientsDigest,
         stoppedAt: null,
       },
     });
+    await this.warnIfOwnerKeysLost();
     getLogger().info("record.ledger.relinked", {
       "record.ledger.stream": this.stream,
       "record.ledger.seq": head.seq,
@@ -500,8 +542,6 @@ class StreamLinker {
 /** What the database files an entry under, so the same row is never sealed a second time. */
 function sourceIdOf(stream: string, seq: number, decoded: DecodedRecord): string {
   switch (decoded.kind) {
-    case "space.key":
-      return `${stream}:${decoded.envelope.id}`;
     case "stream.opened":
       return stream;
     case "memory.revision":

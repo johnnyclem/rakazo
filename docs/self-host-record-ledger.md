@@ -43,10 +43,12 @@ interval and how to verify a stream.
 
 ## How it works
 
-- **A stream opens itself.** Its first entries are the Space key, wrapped by a master key and sent
-  as it is stored in `space_keys`, and a sealed header saying whether the stream is for a bot or a
-  Space, and its name as it was then. A new key is announced the same way when the Space's key rotates. That is
-  what lets a stream be read with the ledger and the master keys alone.
+- **A stream opens itself.** Its first entries are the Space key, announced to whoever may open
+  it, and a sealed header saying whether the stream is for a bot or a Space, and its name as it was
+  then. The key is wrapped by a master key, as stored in `space_keys`, or, when the Space has
+  [owner keys](#owner-keys), sealed to them instead. A new key is announced the same way when the
+  Space's key rotates. That is what lets a stream be read with the ledger and a key that opens it,
+  and nothing else.
 - **Sealing.** Each record is encrypted with its Space's
   [content key](./content-encryption.md#how-it-works) (AES-256-GCM), whatever `CONTENT_ENCRYPTION`
   says, and bound to its stream and position, so an entry moved or copied elsewhere does not open.
@@ -69,27 +71,31 @@ interval and how to verify a stream.
 ## Restore
 
 `record-ledger` reads a stream back from the ledger and puts a bot's memory into the database. It
-needs the ledger and the master keys that sealed the stream (`ENCRYPTION_MASTER_KEYS` or
-`ENCRYPTION_KEY`, or your key manager), and for `restore`, the database. **Keep the master keys
-somewhere that survives losing the server**: without them a ledger cannot be opened, and with them
-anyone holding the ledger can read it.
+needs the ledger and a key that opens the stream: the master keys that sealed it
+(`ENCRYPTION_MASTER_KEYS` or `ENCRYPTION_KEY`, or your key manager), or, for a ledger sealed to its
+owner, the owner's `--identity-file`. `restore` also needs the database. **Keep the master keys
+somewhere that survives losing the server**: without them a ledger sealed under them cannot be
+opened, and with them anyone holding the ledger can read it.
 
 ```sh
 docker compose -f docker-compose.images.yml exec api pnpm --filter @rakazo/api record-ledger list
 ```
 
-- `list` shows each stream the ledger holds, the bot or Space it is for, and its length. It needs
-  no database. A stream your keys do not open is listed with the reason.
-- `export <stream> [--output <file>]` writes a stream's records, decrypted, as JSON lines: every
+- `list [--identity-file <file>]` shows each stream the ledger holds, the bot or Space it is for,
+  and its length. It needs no database. A stream your keys do not open is listed with the reason.
+- `export <stream> [--output <file>] [--identity-file <file>]` writes a stream's records, decrypted, as JSON lines: every
   saved version of every memory, and every audit event, with their original times. It needs no
   database. Read it as plaintext: the file is created owner-only, and an existing file is not
   overwritten.
-- `restore <stream> [--into-bot <id>] [--skip-unreadable] [--dry-run] [--json]` puts the stream's
-  records back in the database. Run `--dry-run` first. Stop the API and worker while it runs, as
-  for any restore.
+- `restore <stream> [--into-bot <id>] [--skip-unreadable] [--dry-run] [--json]
+  [--identity-file <file>]` puts the stream's records back in the database. Run `--dry-run` first.
+  Stop the API and worker while it runs, as for any restore. Restoring in place also tries the
+  Space keys the database already holds, so a stream sealed to its owner can be restored without
+  asking the owner while those keys are still there.
 
-**After losing the deployment.** Set up a new one with the same master keys, sign in, create a bot,
-and run `restore <stream> --into-bot <bot id>`. The old bot's memory comes back in the new bot, with
+**After losing the deployment.** Set up a new one with the same master keys (or, for a ledger
+sealed to its owner, give the owner's identity file instead: no master key is needed), sign in,
+create a bot, and run `restore <stream> --into-bot <bot id>`. The old bot's memory comes back in the new bot, with
 its history, as new revisions: the new bot's own stream then records them, under its Space's key,
 and they carry the time of the restore (the original times stay in the old stream; `export` shows
 them). Audit events are not copied, since they are the old organization's record. Accounts, Spaces
@@ -99,13 +105,54 @@ and bots are not recreated.
 for each stream `list` shows, before starting the API and worker. Memory and audit events the
 backup lacks come back under their own ids, and the database's record of the stream is re-linked to
 the ledger, so sealing carries on after the last entry. Shared memory and a Space's audit trail
-(`space:` streams) restore only in place.
+(`space:` streams) restore only in place. Owner keys are kept in the database too, so a backup older
+than they are does not have them: restore warns when a stream is sealed to owner keys the database
+lacks, and they should be added again (`recipient add`) before the services start, or the next pass
+announces the stream's key under the master key instead.
 
 Restore adds what is missing and never changes what is there. A revision the database holds
 differently is kept as it is and reported, with its document left alone, and the command exits
 non-zero. A stream with an entry that does not open (altered, moved, or sealed under a key you no
 longer have) restores nothing, and says which entry; `--skip-unreadable` restores the rest, but
 cannot re-link the stream. Running it again changes nothing.
+
+## Owner keys
+
+By default a Space's ledger is sealed under the deployment's master key, so whoever runs the
+deployment, or leaks that key, can read it. A Space can instead be sealed to keys its owner holds,
+and the host never sees the private half. The format is [age](https://age-encryption.org), so the
+stock `age` tool opens a stream's key without any rakazo code: an owner is not tied to this
+software to get their data back.
+
+```sh
+record-ledger keygen --output owner.key        # the owner: the file is the private key; keep it
+record-ledger recipient add age1… --space <Space id> --label "owner"   # the host: the public key
+record-ledger recipient list --space <Space id>
+```
+
+From the next pass, each of the Space's streams announces its Space key to the owner keys,
+including every earlier key version, so the owner can open the history as well as what comes next.
+New streams are sealed to them alone, with nothing a master key could open. Restoring then needs
+only the owner's identity (`--identity-file owner.key`): not the host's master key, not the database.
+
+The list of owner keys is the whole policy. One key is self-custody: lose the file and nobody can
+open that ledger. Adding a second key the owner trusts, or a recovery key the operator keeps
+offline, makes it recoverable. No keys keeps the master-key behaviour above.
+
+What this protects, and what it does not:
+
+- It protects the **ledger copy**: the ledger's operator, anyone reading a public chain it anchors
+  to, and anyone who obtains the master key but not the owner's identity cannot read it.
+- It does **not** hide anything from the host that runs the agent: the live memory is in the host's
+  database, and the host seals what it writes. An owner key makes the backup the owner's; it does
+  not make the host blind.
+- What was sealed before owner keys were added stays readable with the master key as well: a ledger
+  cannot be rewritten.
+- Removing an owner key stops it being given new keys, but it keeps any it already opened. To cut
+  it off from new entries, rotate the Space key to a new version (`content-encryption rotate
+  --reencrypt`).
+- An owner who holds a Space key can decrypt that Space's database content if they ever get a copy
+  of it. Keep identities as you would any private key.
 
 ## When a stream stops
 
@@ -128,14 +175,16 @@ UPDATE record_ledger_streams SET "stoppedAt" = NULL WHERE id = '<stream id>';
 ## Privacy and deleting
 
 A ledger is append-only, so nothing sent to it is removed. The ledger, and anyone who can read it,
-holds ciphertext and your wrapped Space keys. **The master key opens all of it**: choose a random
-one (`openssl rand -hex 32` in `ENCRYPTION_MASTER_KEYS`), not a passphrase, and treat it as the key
-to the history. Where a ledger publishes what it holds (a canister anchored with its entries is
-readable by anyone, permanently), a master key that later leaks opens that history for good.
+holds ciphertext and your Space keys, wrapped. **A key that opens a wrapped Space key opens the
+stream**: for a ledger sealed under the master key, that is the master key, so choose a random one
+(`openssl rand -hex 32` in `ENCRYPTION_MASTER_KEYS`), not a passphrase, and treat it as the key to
+the history; for one sealed to [owner keys](#owner-keys), it is the owner's identity. Where a ledger
+publishes what it holds (a canister anchored with its entries is readable by anyone, permanently),
+a key that later leaks opens that history for good.
 
 - Deleting a Space destroys its key in Postgres, but **not** in the ledger: the stream carries it,
-  wrapped. Its entries stay readable to anyone with the master key. Only destroying the master key,
-  which makes all your other data unreadable too, makes a ledger unreadable.
+  wrapped. Its entries stay readable to anyone with the master key, or with an owner key it is
+  sealed to. Only destroying those keys makes a ledger unreadable.
 - Deleting a bot removes its stream and sealed entries from Postgres. Its entries in the ledger
   stay.
 - Deleting one memory note, or the audit log's retention pruning, does not reach entries already
@@ -145,7 +194,7 @@ Consider this before turning the ledger on where people expect a deleted note to
 
 ## Not yet
 
-Nothing in the apps shows a bot's ledger status, and restoring is an operator command. A Space's
-key is wrapped by the deployment's master key: there is no key held by the Space's owner alone.
-Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
+Nothing in the apps shows a bot's ledger status, and restoring and owner keys are operator
+commands: there is no screen where an owner generates a key or adds it, and no key derived from a
+wallet. Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
 is noticed only when the database survives to compare (it warns), or by verifying the anchor.

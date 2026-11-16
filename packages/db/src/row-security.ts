@@ -172,6 +172,7 @@ export const ROW_SECURITY_MODELS: ReadonlySet<string> = new Set([
   "SecurityEvent",
   "AuditEvent",
   "RecordLedgerStream",
+  "RecordLedgerRecipient",
   "RecordLedgerEntry",
   "RecordLedgerCursor",
   "Page",

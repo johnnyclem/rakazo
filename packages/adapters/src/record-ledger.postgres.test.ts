@@ -119,7 +119,7 @@ describePostgres("record ledger (PostgreSQL)", () => {
     expect(key).toMatchObject({
       seq: 1,
       kind: "space.key",
-      sourceId: `${stream.id}:${stream.keyId}`,
+      sourceId: `${stream.id}:1`,
     });
     const envelope = JSON.parse(key!.payload) as Record<string, unknown>;
     expect(envelope).toMatchObject({

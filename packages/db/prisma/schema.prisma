@@ -666,6 +666,7 @@ model Space {
   capabilities                CapabilityInstall[]
   memoryDocuments             MemoryDocument[]
   recordLedgerStreams         RecordLedgerStream[]
+  recordLedgerRecipients      RecordLedgerRecipient[]
   agentHomes                  AgentHome[]
   browserProfiles             BrowserProfile[]
   artifacts                   Artifact[]
@@ -880,6 +881,9 @@ model RecordLedgerStream {
   shippedAt     DateTime?
   /// The Space key the stream last announced, so a new one is announced when it changes.
   keyId         String?
+  /// Who the stream last announced it to: a digest of the Space's recipient keys, null when it
+  /// was announced under a master key. A different set is announced again.
+  recipientsDigest String?
   /// Set when the ledger refuses this stream's entries; shipping stops until cleared.
   stoppedAt     DateTime?
   createdAt     DateTime            @default(now())
@@ -887,6 +891,20 @@ model RecordLedgerStream {
 
   @@index([spaceId])
   @@map("record_ledger_streams")
+}
+
+/// A public key a Space's record ledger is sealed to, held by the Space's owner. Never a secret:
+/// the owner keeps the matching private key, and the server cannot open what it seals to it.
+model RecordLedgerRecipient {
+  id        String   @id
+  spaceId   String
+  space     Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  recipient String
+  label     String?
+  createdAt DateTime @default(now())
+
+  @@unique([spaceId, recipient])
+  @@map("record_ledger_recipients")
 }
 
 model RecordLedgerEntry {
