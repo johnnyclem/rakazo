@@ -12,6 +12,7 @@ import { getLogger } from "@rakazo/logging";
 import { advisoryLock } from "./advisory-lock.js";
 import { syncDestinations } from "./record-ledger-destinations.js";
 import { AUDIT_EVENT_KIND, MEMORY_REVISION_KIND } from "./record-ledger-format.js";
+import { syncProvisions } from "./record-ledger-provisions.js";
 import {
   announceRecipientChanges,
   recipientsBySpace,
@@ -385,7 +386,12 @@ async function ship(
 export function createRecordLedgerReconciler(
   prisma: PrismaClient,
   provider: RecordLedgerProvider,
-  options: { now?: () => Date; settleMs?: number } = {},
+  options: {
+    now?: () => Date;
+    settleMs?: number;
+    /** Called when a Space's request for a place of its own moves on, so open screens read it again. */
+    onProvisionChanged?: (spaceId: string) => void;
+  } = {},
 ): () => Promise<void> {
   const ring = contentEncryptionOf(prisma)?.ring;
   // Records leave the deployment, so they are never sent unsealed.
@@ -402,6 +408,19 @@ export function createRecordLedgerReconciler(
         at: now(),
       }),
     );
+    // A place being made for an owner, which becomes theirs once it is ready. A ledger that cannot
+    // be reached for it is asked again next pass.
+    try {
+      await runAsSystem("bring places being made for owners up to date", () =>
+        syncProvisions(prisma, provider, { onChanged: options.onProvisionChanged }),
+      );
+    } catch (error) {
+      if (error instanceof RecordLedgerUnavailable) {
+        getLogger().warn("record.ledger.unavailable", { "record.ledger.reason": error.reason });
+      } else {
+        throw error;
+      }
+    }
     // Before anything is sent, so a stream's first entries go where its owner said. A ledger that
     // cannot be told does not stop the backups: they are kept wherever it keeps its own meanwhile.
     try {

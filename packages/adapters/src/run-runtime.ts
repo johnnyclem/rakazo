@@ -354,7 +354,10 @@ export function createRunReconciler(
     ),
     reconcileAuditLog: createAuditLogReconciler(prisma, auditLogConfig()),
     reconcileRecordLedger: recordLedger
-      ? createRecordLedgerReconciler(prisma, recordLedger)
+      ? createRecordLedgerReconciler(prisma, recordLedger, {
+          onProvisionChanged: (spaceId) =>
+            void deps.events?.publishSpaceChange?.(spaceId, "recordLedger"),
+        })
       : undefined,
     reconcileIdleComputers: createIdleComputerSweeper({ prisma, jobs }),
   });

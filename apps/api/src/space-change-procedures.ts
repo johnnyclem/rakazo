@@ -19,6 +19,10 @@ const SPACE_CHANGE_PROCEDURES: Record<string, readonly SpaceChangeKind[]> = {
   // Activity leaves out archived bots.
   "bots.restore": ["runs", "routines"],
   "bots.remove": ["runs", "routines"],
+  // Where a Space's backups are kept shows on every client of the Space.
+  "recordLedger.setAnchor": ["recordLedger"],
+  "recordLedger.clearAnchor": ["recordLedger"],
+  "recordLedger.provision": ["recordLedger"],
 };
 
 export function spaceChangesFor(path: readonly string[]): readonly SpaceChangeKind[] {

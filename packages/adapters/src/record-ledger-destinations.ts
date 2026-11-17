@@ -28,7 +28,10 @@ export class AnchoringUnavailableError extends ClientError {
   }
 }
 
-const unavailable: RecordLedgerAnchor = {
+/** Where a Space's backups are kept and how they are doing; whether a place can be made is described apart. */
+export type SpaceAnchor = Omit<RecordLedgerAnchor, "provision">;
+
+const unavailable: SpaceAnchor = {
   label: null,
   writer: null,
   destination: null,
@@ -137,7 +140,7 @@ export async function describeSpaceAnchor(
   prisma: PrismaClient,
   provider: RecordLedgerProvider,
   spaceId: string,
-): Promise<RecordLedgerAnchor> {
+): Promise<SpaceAnchor> {
   const { anchoring } = provider;
   if (!anchoring) return unavailable;
   const named = await prisma.recordLedgerDestination.findUnique({

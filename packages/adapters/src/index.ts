@@ -214,6 +214,7 @@ export * from "./realtime.js";
 export * from "./record-ledger-destinations.js";
 export * from "./record-ledger-factory.js";
 export * from "./record-ledger-owner-keys.js";
+export * from "./record-ledger-provisions.js";
 export * from "./record-ledger-reader.js";
 export * from "./record-ledger-restore.js";
 export * from "./record-ledger-space-keys.js";

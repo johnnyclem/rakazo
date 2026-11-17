@@ -57,6 +57,23 @@ export const RecordLedgerAnchorStatusSchema = z.object({
   error: z.enum(["not_allowed", "failed"]).nullable(),
 });
 
+/** How far making a place for a Space's owner has got. */
+export const RecordLedgerProvisionStateSchema = z.enum(["pending", "ready", "failed"]);
+
+export const RecordLedgerProvisionSchema = z.object({
+  /** Whether a place can be made for the owner now: the ledger can, the plan allows it, and the Space has none. */
+  offered: z.boolean(),
+  /** How a request for one has got to; null when none was made. */
+  state: RecordLedgerProvisionStateSchema.nullable(),
+});
+export type RecordLedgerProvision = z.infer<typeof RecordLedgerProvisionSchema>;
+
+/** The file a Space's owner keeps when a place is made for them: the private half of their key. */
+export const OWNER_IDENTITY_FILE_NAME = "rakazo-owner-key.pem";
+
+/** An owner's public key as the ledger is given it: an Ed25519 key, 32 raw bytes in base64url. */
+export const OwnerIdentityPublicKeySchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
 /**
  * Where a Space's backups are kept off-site when its owner holds the place. `label` is null where
  * the ledger cannot offer that; otherwise it is the ledger's own word for such a place.
@@ -67,6 +84,7 @@ export const RecordLedgerAnchorSchema = z.object({
   writer: z.string().nullable(),
   destination: z.string().nullable(),
   status: RecordLedgerAnchorStatusSchema.nullable(),
+  provision: RecordLedgerProvisionSchema,
 });
 export type RecordLedgerAnchor = z.infer<typeof RecordLedgerAnchorSchema>;
 

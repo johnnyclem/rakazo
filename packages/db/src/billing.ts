@@ -13,6 +13,19 @@ export function hasBillingAccess(status: string | null): boolean {
 }
 
 /**
+ * Whether the Space's organization is on a paid plan now: a subscription that still grants access
+ * and was paid for. A trial that never paid is not one, and nor is a one-time credit top-up.
+ */
+export async function spaceHasPaidPlan(prisma: PrismaClient, spaceId: string): Promise<boolean> {
+  const space = await prisma.space.findUnique({
+    where: { id: spaceId },
+    select: { organization: { select: { billing: { select: { status: true, paidAt: true } } } } },
+  });
+  const billing = space?.organization.billing;
+  return billing != null && billing.paidAt !== null && hasBillingAccess(billing.status);
+}
+
+/**
  * Whether a model-credit organization can run bots. Any live subscription grants it, as does a
  * credit balance outside own-key mode. Otherwise only a free own-key plan or free period does.
  */
