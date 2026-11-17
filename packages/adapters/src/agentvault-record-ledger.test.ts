@@ -1,4 +1,8 @@
-import { RecordLedgerDestinationInvalid, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
+import {
+  RecordLedgerDestinationInvalid,
+  RecordLedgerProvisionRefused,
+  RecordLedgerUnavailable,
+} from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import { AgentVaultRecordLedger } from "./agentvault-record-ledger.js";
 import { createRecordLedgerProvider } from "./record-ledger-factory.js";
@@ -340,3 +344,142 @@ describe("AgentVaultRecordLedger anchoring", () => {
 });
 
 const NOT_ALLOWED_TEXT = "neither the repo owner nor an authorized principal";
+
+describe("AgentVaultRecordLedger provisioning", () => {
+  const OWNER_KEY = "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw";
+  const OWNER_ADDRESS = "tek7g-2zmny-nzjwg-ansf7-rkxv6-z32x6-3flbb-ous5d-pygjx-wkhlc-jae";
+  const CANISTER = "uzt4z-lp777-77774-qaabq-cai";
+  const record = (state: string, extra: object = {}) => ({
+    key: "k",
+    owner: OWNER_ADDRESS,
+    state,
+    canisterId: null,
+    moduleHash: null,
+    error: null,
+    ...extra,
+  });
+
+  it("asks the gateway to make a place for the address its owner key holds, nothing else", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const gateway = ledger((url, init) => {
+      seen.push({ url, init });
+      return Response.json(record("pending"), { status: 202 });
+    });
+
+    const snapshot = await gateway.provisioning.begin("space-1", OWNER_KEY, signal);
+
+    expect(snapshot).toEqual({ state: "pending", destination: null, error: null });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe("https://ledger.example.test/v1/canisters");
+    expect(seen[0]!.init).toMatchObject({ method: "POST", redirect: "error", signal });
+    expect(JSON.parse(String(seen[0]!.init.body))).toEqual({
+      key: "space-1",
+      owner: OWNER_ADDRESS,
+    });
+  });
+
+  it("gives back the place once it is ready", async () => {
+    const gateway = ledger(() => Response.json(record("ready", { canisterId: CANISTER })));
+
+    await expect(gateway.provisioning.begin("space-1", OWNER_KEY, signal)).resolves.toEqual({
+      state: "ready",
+      destination: CANISTER,
+      error: null,
+    });
+  });
+
+  it("passes on why a request failed, for operators", async () => {
+    const gateway = ledger(() =>
+      Response.json(record("failed", { error: "install was cut short" })),
+    );
+
+    await expect(gateway.provisioning.begin("space-1", OWNER_KEY, signal)).resolves.toMatchObject({
+      state: "failed",
+      error: "install was cut short",
+    });
+  });
+
+  it("refuses a key that is not an Ed25519 public key without calling the gateway", async () => {
+    let called = false;
+    const gateway = ledger(() => {
+      called = true;
+      return Response.json(record("pending"));
+    });
+
+    await expect(gateway.provisioning.begin("space-1", "not-a-key", signal)).rejects.toMatchObject({
+      reason: "invalid_owner",
+    });
+    expect(called).toBe(false);
+  });
+
+  it.each([
+    ["invalid_owner", 400, "invalid_owner"],
+    ["invalid_key", 400, "invalid_owner"],
+    ["key_conflict", 409, "key_conflict"],
+    ["limit_reached", 429, "limit_reached"],
+  ])(
+    "turns the gateway's %s into a refusal the product can switch on",
+    async (error, status, reason) => {
+      const gateway = ledger(() =>
+        Response.json({ error, message: `because ${error}` }, { status }),
+      );
+
+      const refused = await gateway.provisioning
+        .begin("space-1", OWNER_KEY, signal)
+        .catch((e: unknown) => e);
+
+      expect(refused).toBeInstanceOf(RecordLedgerProvisionRefused);
+      expect(refused).toMatchObject({ reason, message: `because ${error}` });
+    },
+  );
+
+  it("treats a refused token, an outage and an unreadable answer as the ledger being unavailable", async () => {
+    const refusedToken = ledger(() => Response.json({ error: "unauthorized" }, { status: 401 }));
+    expect(
+      (await unavailable(refusedToken.provisioning.begin("k", OWNER_KEY, signal))).reason,
+    ).toBe("credential");
+    const down = ledger(() => Response.json({}, { status: 503 }));
+    expect((await unavailable(down.provisioning.begin("k", OWNER_KEY, signal))).reason).toBe(
+      "unavailable",
+    );
+    const nonsense = ledger(() => Response.json({ nonsense: true }, { status: 202 }));
+    expect((await unavailable(nonsense.provisioning.begin("k", OWNER_KEY, signal))).reason).toBe(
+      "unavailable",
+    );
+    const unreachable = ledger(() => {
+      throw new Error("connection reset");
+    });
+    await unavailable(unreachable.provisioning.begin("k", OWNER_KEY, signal));
+  });
+
+  it("is available only where the gateway says it was started to make places", async () => {
+    const identity = (extra: object) =>
+      ledger(() => Response.json({ principal: "yzoj6-sgrt2", ...extra }));
+
+    await expect(identity({ provisioning: true }).provisioning.available(signal)).resolves.toBe(
+      true,
+    );
+    await expect(identity({ provisioning: false }).provisioning.available(signal)).resolves.toBe(
+      false,
+    );
+    // A gateway from before it could make places says nothing either way.
+    await expect(identity({}).provisioning.available(signal)).resolves.toBe(false);
+    // One with nothing to anchor with has no identity at all.
+    const none = ledger(() =>
+      Response.json({ error: "anchoring_not_configured" }, { status: 404 }),
+    );
+    await expect(none.provisioning.available(signal)).resolves.toBe(false);
+    expect(identity({}).provisioning.ownerKey).toBe("ed25519");
+  });
+
+  it("asks only for the gateway's identity, and says so when the token is refused", async () => {
+    const seen: Array<{ url: string; method: unknown }> = [];
+    const gateway = ledger((url, init) => {
+      seen.push({ url, method: init.method });
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    });
+
+    expect((await unavailable(gateway.provisioning.available(signal))).reason).toBe("credential");
+    expect(seen).toEqual([{ url: "https://ledger.example.test/v1/identity", method: "GET" }]);
+  });
+});

@@ -15,12 +15,22 @@ type Anchor = {
   writer: string | null;
   destination: string | null;
   status: { streams: number; behind: number; error: "not_allowed" | "failed" | null } | null;
+  provision: { offered: boolean; state: "pending" | "ready" | "failed" | null };
 };
 type Keys = {
   keys: Array<{ recipient: string; label: string | null; createdAt: string }>;
   earlier: boolean;
 };
-const none: Anchor = { label: "Place", writer: WRITER, destination: null, status: null };
+const OWNER_KEY = "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw";
+const none: Anchor = {
+  label: "Place",
+  writer: WRITER,
+  destination: null,
+  status: null,
+  provision: { offered: false, state: null },
+};
+/** A Space whose owner can have a place made for them. */
+const makeable: Anchor = { ...none, provision: { offered: true, state: null } };
 const named = (destination: string, status: Anchor["status"] = null): Anchor => ({
   ...none,
   destination,
@@ -38,7 +48,9 @@ const recordLedger = vi.hoisted(() => ({
   anchor: vi.fn(),
   setAnchor: vi.fn(),
   clearAnchor: vi.fn(),
+  provision: vi.fn(),
 }));
+const ownerIdentity = vi.hoisted(() => ({ create: vi.fn(), download: vi.fn() }));
 /** The space each write named. */
 const wrote = vi.hoisted(() => [] as (string | null)[]);
 vi.mock("../lib/rpc", () => {
@@ -54,6 +66,10 @@ vi.mock("../lib/rpc", () => {
         wrote.push(spaceId);
         return recordLedger.clearAnchor();
       },
+      provision: (input: unknown) => {
+        wrote.push(spaceId);
+        return recordLedger.provision(input);
+      },
     },
   });
   return {
@@ -63,6 +79,11 @@ vi.mock("../lib/rpc", () => {
     selectedSpaceId: () => null,
   };
 });
+
+vi.mock("../lib/owner-identity", () => ({
+  createOwnerIdentity: () => ownerIdentity.create(),
+  downloadOwnerIdentity: (draft: unknown) => ownerIdentity.download(draft),
+}));
 
 const clipboard = vi.hoisted(() => ({ copy: vi.fn() }));
 vi.mock("@lingui/react/macro", () => {
@@ -171,6 +192,14 @@ beforeEach(() => {
     anchor = none;
     return anchor;
   });
+  recordLedger.provision.mockImplementation(async () => {
+    anchor = { ...none, provision: { offered: false, state: "pending" } };
+    return anchor;
+  });
+  ownerIdentity.create.mockResolvedValue({
+    ownerKey: OWNER_KEY,
+    file: "-----BEGIN PRIVATE KEY-----\n",
+  });
   clipboard.copy.mockResolvedValue(true);
 });
 
@@ -234,7 +263,7 @@ const submit = () =>
   });
 
 it("offers nothing where the ledger cannot keep a copy somewhere of the owner's own", async () => {
-  anchor = { label: null, writer: null, destination: null, status: null };
+  anchor = { ...none, label: null, writer: null };
   await render();
   expect(settings()).toBeNull();
   expect(container.textContent).toBe("");
@@ -381,4 +410,121 @@ it("says so when the place cannot be removed", async () => {
 
   await settled(() => expect(container.textContent).toContain("Only the Space's owner"));
   expect(settings()?.textContent).toContain(PLACE);
+});
+
+it("offers to create a place beside setting one, as the main choice, where one can be made", async () => {
+  anchor = makeable;
+  await render();
+  await settled(() => expect(settings()?.textContent).toContain("Place"));
+
+  expect(hasButton("Create")).toBe(true);
+  expect(hasButton("Set")).toBe(true);
+});
+
+it("offers only Set where a place cannot be made", async () => {
+  await render();
+  await settled(() => expect(settings()?.textContent).toContain("Place"));
+
+  expect(hasButton("Create")).toBe(false);
+  expect(hasButton("Set")).toBe(true);
+});
+
+it("makes a key on this device and asks for a place only once the key is kept", async () => {
+  anchor = makeable;
+  await render();
+  await settled(() => expect(hasButton("Create")).toBe(true));
+
+  await click("Create");
+  expect(ownerIdentity.create).toHaveBeenCalledTimes(1);
+  expect(dialog()?.textContent).toContain("Save your key");
+  // Making a key tells the server nothing, and nothing is asked for yet.
+  expect(recordLedger.provision).not.toHaveBeenCalled();
+  expect((button("Done") as HTMLButtonElement).disabled).toBe(true);
+
+  await click("Download");
+  expect(ownerIdentity.download).toHaveBeenCalledTimes(1);
+  expect((button("Done") as HTMLButtonElement).disabled).toBe(false);
+  await click("Done");
+
+  // The server is given the public half alone, for the Space the settings are open on.
+  expect(recordLedger.provision).toHaveBeenCalledExactlyOnceWith({ ownerKey: OWNER_KEY });
+  expect(JSON.stringify(recordLedger.provision.mock.calls)).not.toContain("PRIVATE");
+  expect(wrote).toEqual(["space-window"]);
+  await settled(() => expect(dialog()).toBeNull());
+  await settled(() => expect(settings()?.textContent).toContain("Creating…"));
+  expect(hasButton("Create")).toBe(false);
+  expect(hasButton("Set")).toBe(false);
+});
+
+it("asks for nothing when the key is not kept", async () => {
+  anchor = makeable;
+  await render();
+  await settled(() => expect(hasButton("Create")).toBe(true));
+  await click("Create");
+  await click("Download");
+
+  await click("Close");
+
+  expect(dialog()).toBeNull();
+  expect(recordLedger.provision).not.toHaveBeenCalled();
+  expect(hasButton("Create")).toBe(true);
+});
+
+it("keeps the key dialog, with the reason, when the server will not make a place", async () => {
+  anchor = makeable;
+  await render();
+  await settled(() => expect(hasButton("Create")).toBe(true));
+  await click("Create");
+  await click("Download");
+  recordLedger.provision.mockRejectedValueOnce(
+    new Error("Making a place for your backups needs a paid plan"),
+  );
+
+  await click("Done");
+
+  await settled(() => expect(dialog()?.textContent).toContain("needs a paid plan"));
+  expect((button("Done") as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("says so when a key cannot be made, and goes no further", async () => {
+  anchor = makeable;
+  ownerIdentity.create.mockRejectedValueOnce(new Error("Ed25519 is not supported"));
+  await render();
+  await settled(() => expect(hasButton("Create")).toBe(true));
+
+  await click("Create");
+
+  await settled(() => expect(container.textContent).toContain("Ed25519 is not supported"));
+  expect(dialog()).toBeNull();
+  expect(recordLedger.provision).not.toHaveBeenCalled();
+});
+
+it("shows a place being made even before the owner has a backup key, and nothing to press", async () => {
+  keys = { keys: [], earlier: false };
+  anchor = { ...none, provision: { offered: false, state: "pending" } };
+  await render();
+
+  await settled(() => expect(settings()?.textContent).toContain("Creating…"));
+  expect(container.querySelectorAll("button")).toHaveLength(0);
+});
+
+it("says a place could not be made, and still lets the owner set one themselves", async () => {
+  anchor = { ...none, provision: { offered: false, state: "failed" } };
+  await render();
+
+  await settled(() => expect(settings()?.textContent).toContain("Couldn't create it"));
+  expect(hasButton("Set")).toBe(true);
+  expect(hasButton("Create")).toBe(false);
+});
+
+it("shows the place as any other once it is ready", async () => {
+  anchor = { ...none, provision: { offered: false, state: "pending" } };
+  await render();
+  await settled(() => expect(settings()?.textContent).toContain("Creating…"));
+
+  anchor = { ...named(PLACE), provision: { offered: false, state: "ready" } };
+  await act(async () => client.invalidateQueries());
+
+  await settled(() => expect(settings()?.textContent).toContain(PLACE));
+  expect(settings()?.textContent).not.toContain("Creating…");
 });

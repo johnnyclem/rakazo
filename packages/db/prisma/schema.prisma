@@ -668,6 +668,7 @@ model Space {
   recordLedgerStreams         RecordLedgerStream[]
   recordLedgerRecipients      RecordLedgerRecipient[]
   recordLedgerDestination     RecordLedgerDestination?
+  recordLedgerProvision       RecordLedgerProvision?
   agentHomes                  AgentHome[]
   browserProfiles             BrowserProfile[]
   artifacts                   Artifact[]
@@ -921,6 +922,26 @@ model RecordLedgerDestination {
   updatedAt   DateTime @updatedAt
 
   @@map("record_ledger_destinations")
+}
+
+/// A place being made for a Space's owner, and how far that has got. The ledger makes it and
+/// hands it over; once it is ready it becomes the Space's destination. System-only.
+model RecordLedgerProvision {
+  spaceId     String   @id
+  space       Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  /// The owner's public key. The private half never reaches this server.
+  ownerKey    String
+  /// "pending", "ready" or "failed".
+  state       String   @default("pending")
+  /// The place, once it is ready.
+  destination String?
+  /// What the ledger last said when it failed, for operators. Never shown to people.
+  error       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([state, updatedAt])
+  @@map("record_ledger_provisions")
 }
 
 model RecordLedgerEntry {

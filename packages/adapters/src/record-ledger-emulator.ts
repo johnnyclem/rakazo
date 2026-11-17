@@ -8,12 +8,15 @@ import type {
   RecordLedgerListRequest,
   RecordLedgerListResult,
   RecordLedgerProvider,
+  RecordLedgerProvisioning,
+  RecordLedgerProvisionSnapshot,
   RecordLedgerReadRequest,
   RecordLedgerReadResult,
 } from "@rakazo/adapter-kit";
 import {
   RecordLedgerConflict,
   RecordLedgerDestinationInvalid,
+  RecordLedgerProvisionRefused,
   RecordLedgerUnavailable,
 } from "@rakazo/adapter-kit";
 
@@ -31,6 +34,19 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
   unavailable = false;
   /** Where each stream that names a place is kept. */
   readonly destinations = new Map<string, string>();
+  /** What each request for a place has asked for and how far it has got, by key. */
+  readonly provisions = new Map<
+    string,
+    { ownerKey: string; state: RecordLedgerProvisionSnapshot["state"]; destination: string | null }
+  >();
+  /** What `begin` was asked, in order, so a test can see a request was repeated rather than redone. */
+  readonly provisionCalls: Array<{ key: string; ownerKey: string }> = [];
+  /** Whether it can make places at all; off, as a ledger that was not set up to. */
+  canProvision = true;
+  /** While set, a request that is made fails. */
+  failProvisions = false;
+  /** The most places it will make; refuses past it. */
+  provisionLimit = Number.POSITIVE_INFINITY;
   /** Places that have not allowed the ledger to write yet. */
   readonly notAllowed = new Set<string>();
   /** How far each stream is kept at each place: `<destination>\n<stream>` to a count. */
@@ -69,6 +85,61 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
         anchoredSeq: destination ? (this.kept.get(`${destination}\n${stream}`) ?? 0) : 0,
         headSeq,
         error: destination && this.notAllowed.has(destination) ? "not_allowed" : null,
+      };
+    },
+  };
+
+  /** Finishes every request that is still being made, as the ledger would given a moment. */
+  completeProvisions(): void {
+    for (const [key, provision] of this.provisions) {
+      if (provision.state === "pending") {
+        this.provisions.set(key, {
+          ...provision,
+          state: "ready",
+          destination: `place-${this.provisions.size}x${key.length}`,
+        });
+      }
+    }
+  }
+
+  readonly provisioning: RecordLedgerProvisioning = {
+    ownerKey: "ed25519",
+    available: async (signal) => {
+      signal.throwIfAborted();
+      if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
+      return this.canProvision;
+    },
+    begin: async (key, ownerKey, signal): Promise<RecordLedgerProvisionSnapshot> => {
+      signal.throwIfAborted();
+      if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
+      this.provisionCalls.push({ key, ownerKey });
+      if (!/^[A-Za-z0-9_-]{43}$/.test(ownerKey)) {
+        throw new RecordLedgerProvisionRefused("invalid_owner", "Not an Ed25519 public key");
+      }
+      const existing = this.provisions.get(key);
+      if (existing && existing.ownerKey !== ownerKey) {
+        throw new RecordLedgerProvisionRefused(
+          "key_conflict",
+          "That key was used for another owner",
+        );
+      }
+      if (!existing && this.provisions.size >= this.provisionLimit) {
+        throw new RecordLedgerProvisionRefused("limit_reached", "As many places as it may make");
+      }
+      if (existing?.state === "failed" && !this.failProvisions) {
+        this.provisions.set(key, { ...existing, state: "pending" });
+      } else if (!existing) {
+        this.provisions.set(key, {
+          ownerKey,
+          state: this.failProvisions ? "failed" : "pending",
+          destination: null,
+        });
+      }
+      const now = this.provisions.get(key)!;
+      return {
+        state: now.state,
+        destination: now.destination,
+        error: now.state === "failed" ? "could not be made" : null,
       };
     },
   };
