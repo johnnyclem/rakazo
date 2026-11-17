@@ -1,5 +1,7 @@
 import { onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
+import type { RecordLedgerAnchoring, RecordLedgerProvider } from "@rakazo/adapter-kit";
+import { RecordLedgerDestinationInvalid } from "@rakazo/adapter-kit";
 import { generateOwnerIdentity } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { MAX_OWNER_KEYS } from "@rakazo/contracts";
@@ -19,10 +21,50 @@ const outsider = { spaceId: "space-1", userId: "outsider-1", email: "x@rakazo.te
 
 type KeyRow = { id: string; spaceId: string; recipient: string; label: string | null };
 
+/** A ledger that can keep a stream's copy at a place of the owner's own, and does nothing else. */
+function fakeProvider({ anchoring = true } = {}): RecordLedgerProvider {
+  const unused = async () => {
+    throw new Error("The routes under test never read or write the ledger");
+  };
+  const place: RecordLedgerAnchoring = {
+    label: "Place",
+    writer: async () => "fake-writer",
+    validate: (destination) => {
+      if (!/^[a-z0-9-]{5,63}$/.test(destination)) {
+        throw new RecordLedgerDestinationInvalid("Not a place");
+      }
+    },
+    setDestination: async () => {},
+    status: async () => null,
+  };
+  return {
+    describe: () => ({
+      id: "fake",
+      contractVersion: "1",
+      adapterVersion: "0.1.0",
+      capabilities: {
+        offline: true,
+        maxEntryBytes: 256 * 1024,
+        maxBatchEntries: 100,
+        maxBatchBytes: 2 * 1024 * 1024,
+      },
+    }),
+    ...(anchoring ? { anchoring: place } : {}),
+    append: unused,
+    read: unused,
+    list: unused,
+  };
+}
+
 function ledgerDeps(
-  options: { announcedUnderMasterKey?: boolean; recordLedgerEnabled?: boolean } = {},
+  options: {
+    announcedUnderMasterKey?: boolean;
+    recordLedgerEnabled?: boolean;
+    provider?: RecordLedgerProvider;
+  } = {},
 ) {
   const keys: Array<KeyRow & { createdAt: Date }> = [];
+  const destinations = new Map<string, string>();
   const roles = new Map([
     ["space-1:owner-1", "owner"],
     ["space-1:member-1", "member"],
@@ -63,6 +105,29 @@ function ledgerDeps(
     recordLedgerEntry: {
       findFirst: vi.fn(async () => (options.announcedUnderMasterKey ? { id: "entry-1" } : null)),
     },
+    recordLedgerDestination: {
+      findUnique: vi.fn(async ({ where }: { where: { spaceId: string } }) => {
+        const destination = destinations.get(where.spaceId);
+        return destination ? { destination } : null;
+      }),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+        }: {
+          where: { spaceId: string };
+          create: { destination: string };
+        }) => {
+          destinations.set(where.spaceId, create.destination);
+        },
+      ),
+      deleteMany: vi.fn(async ({ where }: { where: { spaceId: string } }) => {
+        destinations.delete(where.spaceId);
+      }),
+    },
+    // The Space has no streams here; what happens to streams is tested against a real database.
+    recordLedgerStream: { findMany: vi.fn(async () => []), update: vi.fn() },
+    $queryRaw: vi.fn(async () => []),
     $executeRaw: vi.fn(async () => 1),
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
   };
@@ -70,14 +135,15 @@ function ledgerDeps(
     prisma: prisma as unknown as PrismaClient,
     env: { defaultProvider: "fake", defaultModel: "fake-model" },
     dataDir: "/tmp/rakazo-router-test",
-    recordLedgerEnabled: options.recordLedgerEnabled ?? true,
+    recordLedger:
+      options.recordLedgerEnabled === false ? undefined : (options.provider ?? fakeProvider()),
   } as unknown as RouterDeps;
   const handler = new RPCHandler(createRouter(deps), {
     clientInterceptors: [onError((error, { path, signal }) => handleRpcError(error, path, signal))],
   });
   async function call(
     actor: Actor,
-    path: "keys" | "offer" | "addKey" | "removeKey",
+    path: "keys" | "offer" | "addKey" | "removeKey" | "anchor" | "setAnchor" | "clearAnchor",
     input: Record<string, unknown> = {},
   ) {
     const { response } = await handler.handle(
@@ -96,7 +162,7 @@ function ledgerDeps(
       },
     };
   }
-  return { keys, roles, call };
+  return { keys, roles, destinations, call };
 }
 
 describe("recordLedger routes", () => {
@@ -201,6 +267,86 @@ describe("recordLedger routes", () => {
   it("asks nobody once a stream was announced under the deployment's key", async () => {
     const { call } = ledgerDeps({ announcedUnderMasterKey: true });
     expect((await call(owner, "offer")).body.json).toEqual({ offer: false });
+  });
+
+  it("keeps where the owner's backups are kept, and reports it", async () => {
+    const { call, destinations } = ledgerDeps();
+    const none = { label: "Place", writer: "fake-writer", destination: null, status: null };
+    expect((await call(owner, "anchor")).body.json).toEqual(none);
+
+    const set = await call(owner, "setAnchor", { destination: "place-aaaa" });
+    expect(set.status).toBe(200);
+    expect(set.body.json).toEqual({
+      ...none,
+      destination: "place-aaaa",
+      status: { streams: 0, behind: 0, error: null },
+    });
+    expect(destinations.get("space-1")).toBe("place-aaaa");
+
+    expect((await call(owner, "clearAnchor")).body.json).toEqual(none);
+    expect(destinations.size).toBe(0);
+  });
+
+  it("lets only the Space's owner see or change where its backups are kept", async () => {
+    const { call, destinations } = ledgerDeps();
+    for (const actor of [member, outsider]) {
+      expect((await call(actor, "anchor")).status).toBe(403);
+      expect((await call(actor, "setAnchor", { destination: "place-aaaa" })).status).toBe(403);
+      expect((await call(actor, "clearAnchor")).status).toBe(403);
+    }
+    expect(destinations.size).toBe(0);
+    await call(owner, "setAnchor", { destination: "place-aaaa" });
+    expect((await call(member, "clearAnchor")).status).toBe(403);
+    expect(destinations.get("space-1")).toBe("place-aaaa");
+  });
+
+  it("refuses what is not a place, in the ledger's own word for one", async () => {
+    const { call, destinations } = ledgerDeps();
+    for (const destination of ["", "   ", "x".repeat(129)]) {
+      expect((await call(owner, "setAnchor", { destination })).status, destination).toBe(400);
+    }
+    const refused = await call(owner, "setAnchor", { destination: "Not A Place" });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("That is not a valid place");
+    expect(destinations.size).toBe(0);
+  });
+
+  it("offers nothing where the ledger cannot keep a copy somewhere of the owner's own", async () => {
+    const without = ledgerDeps({ provider: fakeProvider({ anchoring: false }) });
+    expect((await without.call(owner, "anchor")).body.json).toEqual({
+      label: null,
+      writer: null,
+      destination: null,
+      status: null,
+    });
+    expect((await without.call(owner, "setAnchor", { destination: "place-aaaa" })).status).toBe(
+      404,
+    );
+    expect((await without.call(owner, "clearAnchor")).status).toBe(404);
+
+    const off = ledgerDeps({ recordLedgerEnabled: false });
+    expect((await off.call(owner, "anchor")).body.json).toMatchObject({ label: null });
+    expect((await off.call(owner, "setAnchor", { destination: "place-aaaa" })).status).toBe(404);
+  });
+
+  it("is audited as a credential change, without where the backups go", () => {
+    for (const [path, type] of [
+      ["setAnchor", "credential.changed"],
+      ["clearAnchor", "credential.deleted"],
+    ] as const) {
+      const event = procedureSecurityEvent(
+        ["recordLedger", path],
+        { destination: "place-aaaa" },
+        owner,
+      );
+      expect(event).toMatchObject({
+        type,
+        userId: owner.userId,
+        metadata: { procedure: `recordLedger.${path}`, kind: "record_ledger_anchor" },
+      });
+      expect(JSON.stringify(event)).not.toContain("place-aaaa");
+    }
+    expect(procedureSecurityEvent(["recordLedger", "anchor"], {}, owner)).toBeUndefined();
   });
 
   it("is audited as a credential change, without the key", () => {

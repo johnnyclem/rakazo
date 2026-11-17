@@ -2,6 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import { Button, Input } from "@rakazo/ui-web";
 import { useEffect, useId, useState } from "react";
 import { BackupKeySettings } from "../components/BackupKeySettings";
+import { BackupLocationSettings } from "../components/BackupLocationSettings";
 import { SettingsGroup, SettingsRow } from "../components/SettingsRows";
 import { SpaceMembersSettings } from "../components/SpaceMembersSettings";
 import { SpaceSettingOverrides } from "./SpaceSettingOverrides";
@@ -113,7 +114,12 @@ export function SpaceSettingsPanel({
         </SettingsGroup>
       ) : null}
       <SpaceMembersSettings space={space} onLeft={onLeft} />
-      {recordLedgerEnabled && space.canRename ? <BackupKeySettings /> : null}
+      {recordLedgerEnabled && space.canRename ? (
+        <>
+          <BackupKeySettings />
+          <BackupLocationSettings />
+        </>
+      ) : null}
       <SpaceSettingOverrides onClose={onClose} onBusyChange={setOverridesBusy} />
       {space.canDelete ? (
         <Button

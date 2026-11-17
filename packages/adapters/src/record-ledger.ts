@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
 import type { RecordLedgerEntry, RecordLedgerProvider } from "@rakazo/adapter-kit";
-import { RecordLedgerConflict, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
+import {
+  RecordLedgerConflict,
+  RecordLedgerDestinationInvalid,
+  RecordLedgerUnavailable,
+} from "@rakazo/adapter-kit";
 import { deadlineSignal } from "@rakazo/core";
 import type { ContentKeyRing, Prisma, PrismaClient } from "@rakazo/db";
 import { auditEventDto, contentEncryptionOf, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { advisoryLock } from "./advisory-lock.js";
+import { syncDestinations } from "./record-ledger-destinations.js";
 import { AUDIT_EVENT_KIND, MEMORY_REVISION_KIND } from "./record-ledger-format.js";
 import {
   announceRecipientChanges,
@@ -397,6 +402,23 @@ export function createRecordLedgerReconciler(
         at: now(),
       }),
     );
+    // Before anything is sent, so a stream's first entries go where its owner said. A ledger that
+    // cannot be told does not stop the backups: they are kept wherever it keeps its own meanwhile.
+    try {
+      await runAsSystem("tell the record ledger where each stream is kept", () =>
+        syncDestinations(prisma, provider),
+      );
+    } catch (error) {
+      if (error instanceof RecordLedgerDestinationInvalid) {
+        getLogger().warn("record.ledger.destination_invalid", {
+          "record.ledger.reason": error.message,
+        });
+      } else if (error instanceof RecordLedgerUnavailable) {
+        getLogger().warn("record.ledger.unavailable", { "record.ledger.reason": error.reason });
+      } else {
+        throw error;
+      }
+    }
     try {
       await runAsSystem("ship the record ledger", () => ship(prisma, provider, now));
     } catch (error) {

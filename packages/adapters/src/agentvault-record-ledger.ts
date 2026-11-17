@@ -1,4 +1,6 @@
 import type {
+  RecordLedgerAnchoring,
+  RecordLedgerAnchorStatus,
   RecordLedgerAppendRequest,
   RecordLedgerHead,
   RecordLedgerListRequest,
@@ -7,7 +9,11 @@ import type {
   RecordLedgerReadRequest,
   RecordLedgerReadResult,
 } from "@rakazo/adapter-kit";
-import { RecordLedgerConflict, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
+import {
+  RecordLedgerConflict,
+  RecordLedgerDestinationInvalid,
+  RecordLedgerUnavailable,
+} from "@rakazo/adapter-kit";
 import { secureHttpOrigin } from "@rakazo/contracts";
 import { z } from "zod";
 import { readBoundedText } from "./connector-http.js";
@@ -40,6 +46,19 @@ const streamList = z.object({
   next: z.string().nullable(),
 });
 
+const writerIdentity = z.object({ principal: z.string().min(1) });
+const anchorState = z.object({
+  destination: z.string().nullable(),
+  anchoredSeq: z.number().int().min(0),
+  headSeq: z.number().int().min(0),
+  error: z.string().nullable(),
+});
+
+/** A canister id: five groups of five characters ending in `cai`, as the network writes them. */
+const CANISTER_ID = /^[a-z0-9]{5}(-[a-z0-9]{5}){3}-cai$/;
+/** What the canister says when the owner has not allowed the gateway to write to it. */
+const NOT_ALLOWED = "neither the repo owner nor an authorized principal";
+
 export interface AgentVaultRecordLedgerOptions {
   /** The ledger gateway's origin, such as `https://ledger.example.test`. */
   baseUrl: string;
@@ -61,6 +80,64 @@ export class AgentVaultRecordLedger implements RecordLedgerProvider {
     this.token = options.token;
     this.send = options.fetch ?? fetch;
   }
+
+  /** A stream's copy can be kept on a canister its owner holds; the gateway says if it cannot. */
+  readonly anchoring: RecordLedgerAnchoring = {
+    label: "Canister ID",
+    writer: async (signal) => {
+      const { response, body } = await this.call("/v1/identity", { method: "GET" }, signal);
+      const parsed = writerIdentity.safeParse(body);
+      // A gateway with no replica to anchor on has no identity to give, and nothing to offer.
+      if (!response.ok || !parsed.success) throw refusal(response.ok ? 502 : response.status);
+      return parsed.data.principal;
+    },
+    validate: (destination) => {
+      if (!CANISTER_ID.test(destination)) {
+        throw new RecordLedgerDestinationInvalid("Not a canister ID");
+      }
+    },
+    setDestination: async (stream, destination, signal) => {
+      const path = `/v1/streams/${encodeURIComponent(stream)}/anchor`;
+      const { response } =
+        destination === null
+          ? await this.call(path, { method: "DELETE" }, signal)
+          : await this.call(
+              path,
+              {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ destination }),
+              },
+              signal,
+            );
+      if (response.ok) return;
+      // Naming nowhere is already true of a gateway that has no places to name.
+      if (destination === null && response.status === 409) return;
+      if (destination !== null && response.status === 400) {
+        throw new RecordLedgerDestinationInvalid("Not a canister ID");
+      }
+      throw refusal(response.status);
+    },
+    status: async (stream, signal): Promise<RecordLedgerAnchorStatus | null> => {
+      const { response, body } = await this.call(
+        `/v1/streams/${encodeURIComponent(stream)}/anchor`,
+        { method: "GET" },
+        signal,
+      );
+      if (!response.ok) throw refusal(response.status);
+      const parsed = anchorState.safeParse(body);
+      if (!parsed.success) throw new RecordLedgerUnavailable("unavailable");
+      const { destination, anchoredSeq, headSeq, error } = parsed.data;
+      if (!destination && headSeq === 0) return null;
+      return {
+        destination,
+        anchoredSeq,
+        headSeq,
+        // The gateway passes on the canister's own words; only this adapter reads them.
+        error: error === null ? null : error.includes(NOT_ALLOWED) ? "not_allowed" : "failed",
+      };
+    },
+  };
 
   describe() {
     return {

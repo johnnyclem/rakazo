@@ -6,6 +6,7 @@ import type {
   NotificationProvider,
   PaymentWalletProvider,
   ProductAnalytics,
+  RecordLedgerProvider,
   SandboxProvider,
   SecretStore,
   TransactionalEmailProvider,
@@ -79,8 +80,8 @@ export interface RouterDeps {
   userCloudAgents?: UserCloudAgents;
   /** The deployment's wallet provider; absent hides purchases. */
   paymentWallet?: PaymentWalletProvider | null;
-  /** Whether the deployment keeps a record ledger, so a Space owner can hold its key. */
-  recordLedgerEnabled?: boolean;
+  /** The deployment's record ledger, when it keeps one, so a Space owner can hold its key. */
+  recordLedger?: RecordLedgerProvider | null;
   prisma: PrismaClient;
   events: ThreadEvents;
   boardEvents: BoardEvents;

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
+  RecordLedgerAnchoring,
+  RecordLedgerAnchorStatus,
   RecordLedgerAppendRequest,
   RecordLedgerEntry,
   RecordLedgerHead,
@@ -9,7 +11,11 @@ import type {
   RecordLedgerReadRequest,
   RecordLedgerReadResult,
 } from "@rakazo/adapter-kit";
-import { RecordLedgerConflict, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
+import {
+  RecordLedgerConflict,
+  RecordLedgerDestinationInvalid,
+  RecordLedgerUnavailable,
+} from "@rakazo/adapter-kit";
 
 interface StoredEntry {
   kind: string;
@@ -23,6 +29,49 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
   readonly streams = new Map<string, StoredEntry[]>();
   /** While set, every append fails as if the ledger were down. */
   unavailable = false;
+  /** Where each stream that names a place is kept. */
+  readonly destinations = new Map<string, string>();
+  /** Places that have not allowed the ledger to write yet. */
+  readonly notAllowed = new Set<string>();
+  /** How far each stream is kept at each place: `<destination>\n<stream>` to a count. */
+  private readonly kept = new Map<string, number>();
+
+  /** Lets what the ledger holds reach the places it has been told about, as a pass of anchoring would. */
+  anchorNow(): void {
+    for (const [stream, destination] of this.destinations) {
+      if (this.notAllowed.has(destination)) continue;
+      this.kept.set(`${destination}\n${stream}`, this.streams.get(stream)?.length ?? 0);
+    }
+  }
+
+  readonly anchoring: RecordLedgerAnchoring = {
+    label: "Place",
+    writer: async () => "emulator-writer",
+    validate: (destination) => {
+      if (!/^[a-z0-9-]{5,63}$/.test(destination)) {
+        throw new RecordLedgerDestinationInvalid("Not a place the emulator can keep things at");
+      }
+    },
+    setDestination: async (stream, destination, signal) => {
+      signal.throwIfAborted();
+      if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
+      if (destination === null) this.destinations.delete(stream);
+      else this.destinations.set(stream, destination);
+    },
+    status: async (stream, signal): Promise<RecordLedgerAnchorStatus | null> => {
+      signal.throwIfAborted();
+      if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
+      const destination = this.destinations.get(stream) ?? null;
+      const headSeq = this.streams.get(stream)?.length ?? 0;
+      if (!destination && headSeq === 0) return null;
+      return {
+        destination,
+        anchoredSeq: destination ? (this.kept.get(`${destination}\n${stream}`) ?? 0) : 0,
+        headSeq,
+        error: destination && this.notAllowed.has(destination) ? "not_allowed" : null,
+      };
+    },
+  };
 
   describe() {
     return {

@@ -202,7 +202,12 @@ import {
   SpendingStatusSchema,
 } from "./payments.js";
 import { MessageReactionSchema } from "./reactions.js";
-import { OwnerKeyRecipientSchema, RecordLedgerKeysSchema } from "./record-ledger-keys.js";
+import {
+  OwnerKeyRecipientSchema,
+  RecordLedgerAnchorSchema,
+  RecordLedgerDestinationSchema,
+  RecordLedgerKeysSchema,
+} from "./record-ledger-keys.js";
 import { RoutineWatchSchema } from "./routine-watch.js";
 import {
   ROUTINE_HISTORY_PAGE_SIZE,
@@ -1618,6 +1623,13 @@ export const appContract = {
      * no key and no backup yet, so a key made now seals everything. False for anyone else.
      */
     offer: oc.output(z.object({ offer: z.boolean() })),
+    /** Where the Space's backups are kept off-site when its owner holds the place, if the ledger offers that. */
+    anchor: oc.output(RecordLedgerAnchorSchema),
+    setAnchor: oc
+      .input(z.object({ destination: RecordLedgerDestinationSchema }).strict())
+      .output(RecordLedgerAnchorSchema),
+    /** Back to where the ledger keeps its own copy. */
+    clearAnchor: oc.output(RecordLedgerAnchorSchema),
     /** Adding a key already held changes nothing. */
     addKey: oc
       .input(z.object({ recipient: OwnerKeyRecipientSchema }).strict())
