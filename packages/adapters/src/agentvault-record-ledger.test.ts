@@ -1,4 +1,4 @@
-import { RecordLedgerUnavailable } from "@rakazo/adapter-kit";
+import { RecordLedgerDestinationInvalid, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import { AgentVaultRecordLedger } from "./agentvault-record-ledger.js";
 import { createRecordLedgerProvider } from "./record-ledger-factory.js";
@@ -200,3 +200,143 @@ describe("createRecordLedgerProvider", () => {
     );
   });
 });
+
+describe("AgentVaultRecordLedger anchoring", () => {
+  const CANISTER = "uxrrr-q7777-77774-qaaaq-cai";
+  const WRITER = "yzoj6-sgrt2-fa25n-xcseg-7gr7y-7nciu-cuqts-edigf-s5vts-cwigu-jae";
+
+  it("asks the gateway which identity it writes as, which is what an owner has to allow", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const principal = await ledger((url, init) => {
+      seen.push({ url, init });
+      return Response.json({ principal: WRITER });
+    }).anchoring.writer(signal);
+
+    expect(principal).toBe(WRITER);
+    expect(seen[0]!.url).toBe("https://ledger.example.test/v1/identity");
+    expect(seen[0]!.init.headers).toMatchObject({ authorization: "Bearer fake-token" });
+  });
+
+  it("says it has nothing to offer when the gateway has no identity to give", async () => {
+    const error = await unavailable(
+      ledger(() =>
+        Response.json({ error: "anchoring_not_configured" }, { status: 404 }),
+      ).anchoring.writer(signal),
+    );
+    expect(error.reason).toBe("unavailable");
+  });
+
+  it("names a canister for a stream, and puts it back with the rest", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const gateway = ledger((url, init) => {
+      seen.push({ url, init });
+      return Response.json({ destination: null, anchoredSeq: 0, headSeq: 0, error: null });
+    });
+
+    await gateway.anchoring.setDestination("stream1", CANISTER, signal);
+    await gateway.anchoring.setDestination("stream1", null, signal);
+
+    expect(seen.map(({ url, init }) => [init.method, url])).toEqual([
+      ["PUT", "https://ledger.example.test/v1/streams/stream1/anchor"],
+      ["DELETE", "https://ledger.example.test/v1/streams/stream1/anchor"],
+    ]);
+    expect(JSON.parse(String(seen[0]!.init.body))).toEqual({ destination: CANISTER });
+    expect(seen[0]!.init).toMatchObject({ redirect: "error", signal });
+  });
+
+  it("refuses what is not a canister id before asking anything, and again if the gateway does", async () => {
+    let asked = 0;
+    const gateway = ledger(() => {
+      asked += 1;
+      return Response.json({ error: "invalid" }, { status: 400 });
+    });
+    for (const bad of ["", "not a canister", `${CANISTER}x`, CANISTER.toUpperCase(), "aaaaa-aa"]) {
+      expect(() => gateway.anchoring.validate(bad), bad).toThrow(RecordLedgerDestinationInvalid);
+    }
+    expect(() => gateway.anchoring.validate(CANISTER)).not.toThrow();
+    expect(asked).toBe(0);
+
+    // A name that has the right shape but is not one is the gateway's to refuse.
+    await expect(
+      gateway.anchoring.setDestination("stream1", CANISTER, signal),
+    ).rejects.toBeInstanceOf(RecordLedgerDestinationInvalid);
+  });
+
+  it("tells a gateway that cannot anchor apart from one that is down, and does not fail putting a stream back", async () => {
+    const unconfigured = ledger(() =>
+      Response.json({ error: "anchoring_not_configured" }, { status: 409 }),
+    );
+    expect(
+      (await unavailable(unconfigured.anchoring.setDestination("stream1", CANISTER, signal)))
+        .reason,
+    ).toBe("unavailable");
+    await expect(
+      unconfigured.anchoring.setDestination("stream1", null, signal),
+    ).resolves.toBeUndefined();
+
+    const refusedToken = ledger(() => Response.json({ error: "unauthorized" }, { status: 401 }));
+    expect(
+      (await unavailable(refusedToken.anchoring.setDestination("stream1", CANISTER, signal)))
+        .reason,
+    ).toBe("credential");
+    const down = ledger(() => new Response("bad gateway", { status: 502 }));
+    expect(
+      (await unavailable(down.anchoring.setDestination("stream1", CANISTER, signal))).reason,
+    ).toBe("unavailable");
+  });
+
+  it("reports how far a stream is kept, and turns the canister's refusal into a code of its own", async () => {
+    const state = (error: string | null, extra: object = {}) => ({
+      destination: CANISTER,
+      anchoredSeq: 2,
+      headSeq: 5,
+      error,
+      ...extra,
+    });
+    const status = (body: object) =>
+      ledger(() => Response.json(body)).anchoring.status("stream1", signal);
+
+    expect(await status(state(null))).toEqual({
+      destination: CANISTER,
+      anchoredSeq: 2,
+      headSeq: 5,
+      error: null,
+    });
+    expect(
+      (
+        await status(
+          state(
+            `memory_repo refused the write: yzoj6 is ${NOT_ALLOWED_TEXT}. The owner can allow it.`,
+          ),
+        )
+      )?.error,
+    ).toBe("not_allowed");
+    expect((await status(state("canister unreachable")))?.error).toBe("failed");
+    // A stream that is kept nowhere and holds nothing is not one the ledger knows.
+    expect(await status({ destination: null, anchoredSeq: 0, headSeq: 0, error: null })).toBeNull();
+    expect(
+      (await status({ destination: null, anchoredSeq: 0, headSeq: 3, error: null }))?.headSeq,
+    ).toBe(3);
+  });
+
+  it("never passes the canister's own words on", async () => {
+    const answer = await ledger(() =>
+      Response.json({
+        destination: CANISTER,
+        anchoredSeq: 0,
+        headSeq: 1,
+        error: "refused: run `agentvault memory authorize yzoj6`",
+      }),
+    ).anchoring.status("stream1", signal);
+    expect(JSON.stringify(answer)).not.toMatch(/agentvault|memory_repo|authorize/);
+  });
+
+  it("is a gateway-level problem, not a stream's, when the answer is not one it understands", async () => {
+    const error = await unavailable(
+      ledger(() => Response.json({ nonsense: true })).anchoring.status("stream1", signal),
+    );
+    expect(error.reason).toBe("unavailable");
+  });
+});
+
+const NOT_ALLOWED_TEXT = "neither the repo owner nor an authorized principal";

@@ -46,3 +46,34 @@ export function ownerKeyFile(key: {
 }): string {
   return `# created: ${key.createdAt.toISOString()}\n# public key: ${key.recipient}\n${key.identity}\n`;
 }
+
+/** How far a Space's streams are kept where its owner named. Counted over the first streams only. */
+export const RecordLedgerAnchorStatusSchema = z.object({
+  /** Streams looked at. */
+  streams: z.number().int().min(0),
+  /** Of those, how many are not yet fully kept there. */
+  behind: z.number().int().min(0),
+  /** Why, when the ledger can say: it is not allowed to write there yet, or something failed. */
+  error: z.enum(["not_allowed", "failed"]).nullable(),
+});
+
+/**
+ * Where a Space's backups are kept off-site when its owner holds the place. `label` is null where
+ * the ledger cannot offer that; otherwise it is the ledger's own word for such a place.
+ */
+export const RecordLedgerAnchorSchema = z.object({
+  label: z.string().nullable(),
+  /** The identity the ledger writes as, which the owner has to allow at their place. */
+  writer: z.string().nullable(),
+  destination: z.string().nullable(),
+  status: RecordLedgerAnchorStatusSchema.nullable(),
+});
+export type RecordLedgerAnchor = z.infer<typeof RecordLedgerAnchorSchema>;
+
+/** The longest destination accepted; what it is, is for the ledger to say. */
+export const MAX_ANCHOR_DESTINATION_LENGTH = 128;
+export const RecordLedgerDestinationSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_ANCHOR_DESTINATION_LENGTH);

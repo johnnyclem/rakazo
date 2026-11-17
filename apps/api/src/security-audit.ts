@@ -66,6 +66,8 @@ export const AUDITED_PROCEDURES: Record<string, AuditedProcedure> = {
   "paymentWallet.disconnect": { type: "credential.deleted", kind: "payment_wallet" },
   "recordLedger.addKey": { type: "credential.created", kind: "record_ledger_key" },
   "recordLedger.removeKey": { type: "credential.deleted", kind: "record_ledger_key" },
+  "recordLedger.setAnchor": { type: "credential.changed", kind: "record_ledger_anchor" },
+  "recordLedger.clearAnchor": { type: "credential.deleted", kind: "record_ledger_anchor" },
   "deployment.update": {
     type: "deployment.settings.changed",
     fields: ["signupsEnabled", "computerHost"],

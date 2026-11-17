@@ -667,6 +667,7 @@ model Space {
   memoryDocuments             MemoryDocument[]
   recordLedgerStreams         RecordLedgerStream[]
   recordLedgerRecipients      RecordLedgerRecipient[]
+  recordLedgerDestination     RecordLedgerDestination?
   agentHomes                  AgentHome[]
   browserProfiles             BrowserProfile[]
   artifacts                   Artifact[]
@@ -884,6 +885,9 @@ model RecordLedgerStream {
   /// Who the stream last announced it to: a digest of the Space's recipient keys, null when it
   /// was announced under a master key. A different set is announced again.
   recipientsDigest String?
+  /// The destination the ledger was last told to keep this stream's off-site copy at; null for none,
+  /// which is the ledger's own default. A stream whose Space names another is told again.
+  destinationSynced String?
   /// Set when the ledger refuses this stream's entries; shipping stops until cleared.
   stoppedAt     DateTime?
   createdAt     DateTime            @default(now())
@@ -905,6 +909,18 @@ model RecordLedgerRecipient {
 
   @@unique([spaceId, recipient])
   @@map("record_ledger_recipients")
+}
+
+/// Where a Space's record ledger keeps its off-site copy when its owner holds the place: an opaque
+/// destination the ledger provider understands. No row means the ledger's own default.
+model RecordLedgerDestination {
+  spaceId     String   @id
+  space       Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  destination String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("record_ledger_destinations")
 }
 
 model RecordLedgerEntry {

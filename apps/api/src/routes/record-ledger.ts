@@ -1,8 +1,12 @@
 import {
+  AnchoringUnavailableError,
   addOwnerKey,
+  clearSpaceDestination,
+  describeSpaceAnchor,
   listOwnerKeys,
   removeOwnerKey,
   requireSpaceOwner,
+  setSpaceDestination,
   shouldOfferOwnerKey,
 } from "@rakazo/adapters";
 import { runAsSystem } from "@rakazo/db";
@@ -29,7 +33,7 @@ export function recordLedgerRoutes(ctx: RouterContext) {
       ),
       // Asked by every new account's onboarding, so it answers no rather than refusing.
       offer: authed.recordLedger.offer.handler(({ context }) =>
-        deps.recordLedgerEnabled
+        deps.recordLedger
           ? runAsSystem(
               "decide whether a new account is offered a record ledger key",
               async () => ({
@@ -37,6 +41,28 @@ export function recordLedgerRoutes(ctx: RouterContext) {
               }),
             )
           : { offer: false },
+      ),
+      // Where the Space's backups are kept off-site, for the owner to say and to watch.
+      anchor: authed.recordLedger.anchor.handler(({ context }) =>
+        asOwner(context.actor, async (spaceId) =>
+          deps.recordLedger
+            ? describeSpaceAnchor(prisma, deps.recordLedger, spaceId)
+            : { label: null, writer: null, destination: null, status: null },
+        ),
+      ),
+      setAnchor: authed.recordLedger.setAnchor.handler(({ context, input }) =>
+        asOwner(context.actor, async (spaceId) => {
+          if (!deps.recordLedger) throw new AnchoringUnavailableError();
+          await setSpaceDestination(prisma, deps.recordLedger, spaceId, input.destination);
+          return describeSpaceAnchor(prisma, deps.recordLedger, spaceId);
+        }),
+      ),
+      clearAnchor: authed.recordLedger.clearAnchor.handler(({ context }) =>
+        asOwner(context.actor, async (spaceId) => {
+          if (!deps.recordLedger) throw new AnchoringUnavailableError();
+          await clearSpaceDestination(prisma, deps.recordLedger, spaceId);
+          return describeSpaceAnchor(prisma, deps.recordLedger, spaceId);
+        }),
       ),
       addKey: authed.recordLedger.addKey.handler(({ context, input }) =>
         asOwner(context.actor, async (spaceId) => {

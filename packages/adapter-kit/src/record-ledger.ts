@@ -70,6 +70,49 @@ export interface RecordLedgerCapabilities {
   maxBatchBytes: number;
 }
 
+/** Why a stream's off-site copy is behind: the owner has not allowed the ledger to write there, or something failed. */
+export type RecordLedgerAnchorError = "not_allowed" | "failed";
+
+/** Where one stream's off-site copy is kept, and how far it has got. */
+export interface RecordLedgerAnchorStatus {
+  /** The place it is kept now; null when it is kept wherever the ledger keeps its own. */
+  destination: string | null;
+  /** How many entries are there, and how many the stream has. */
+  anchoredSeq: number;
+  headSeq: number;
+  error: RecordLedgerAnchorError | null;
+}
+
+/**
+ * What an owner may name as the place their stream's off-site copy is kept is not a usable one.
+ * The message is for the owner to read.
+ */
+export class RecordLedgerDestinationInvalid extends Error {
+  override readonly name = "RecordLedgerDestinationInvalid";
+}
+
+/**
+ * A ledger that can keep a stream's off-site copy somewhere its owner holds, so that nobody who
+ * runs the ledger, or this deployment, controls it. A destination is a string only the provider
+ * understands; core passes it through and shows the provider's own label for it.
+ */
+export interface RecordLedgerAnchoring {
+  /** What the provider calls such a place, for a person to read. */
+  readonly label: string;
+  /** The identity the ledger writes as: what an owner has to allow at the place they keep the copy. */
+  writer(signal: AbortSignal): Promise<string>;
+  /** Throws `RecordLedgerDestinationInvalid` unless `destination` could be a place. Needs no network. */
+  validate(destination: string): void;
+  /**
+   * Keeps `stream`'s off-site copy at `destination` from now on, or with null back where the ledger
+   * keeps its own. What was kept before stays where it is. Throws `RecordLedgerUnavailable` when
+   * the ledger cannot be reached or does not take it.
+   */
+  setDestination(stream: string, destination: string | null, signal: AbortSignal): Promise<void>;
+  /** Where `stream` is kept and how far it has got; null when the ledger holds neither. */
+  status(stream: string, signal: AbortSignal): Promise<RecordLedgerAnchorStatus | null>;
+}
+
 /**
  * An append-only store outside this deployment that keeps each stream in order and makes
  * rewriting it detectable. Product code seals every payload before it gets here. Core runs
@@ -77,6 +120,8 @@ export interface RecordLedgerCapabilities {
  */
 export interface RecordLedgerProvider {
   describe(): AdapterDescriptor<RecordLedgerCapabilities>;
+  /** Present when owners can name where their streams' off-site copy is kept. */
+  readonly anchoring?: RecordLedgerAnchoring;
   /**
    * Appends `entries` to the stream. Entries the stream already holds are accepted when
    * they are identical, so a caller that never saw the answer sends the same entries again.

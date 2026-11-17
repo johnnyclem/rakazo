@@ -48,6 +48,9 @@ vi.mock("./SpaceSettingOverrides", () => ({
 vi.mock("../components/BackupKeySettings", () => ({
   BackupKeySettings: () => <div data-testid="backup-key-settings" />,
 }));
+vi.mock("../components/BackupLocationSettings", () => ({
+  BackupLocationSettings: () => <div data-testid="backup-location-settings" />,
+}));
 vi.mock("../components/SpaceMembersSettings", () => ({
   SpaceMembersSettings: () => <div data-testid="space-members-settings" />,
 }));
@@ -128,20 +131,23 @@ afterEach(async () => {
 });
 
 describe("SpaceSettingsPanel", () => {
-  it("offers the backup key to a space's owner where the deployment keeps a ledger", async () => {
-    const shown = () => container.querySelector('[data-testid="backup-key-settings"]') !== null;
+  it("offers the backup key and where it is kept to a space's owner where the deployment keeps a ledger", async () => {
+    const shown = () =>
+      ["backup-key-settings", "backup-location-settings"].map(
+        (id) => container.querySelector(`[data-testid="${id}"]`) !== null,
+      );
     await render({});
-    expect(shown()).toBe(false);
+    expect(shown()).toEqual([false, false]);
 
     await render({ recordLedgerEnabled: true });
-    expect(shown()).toBe(true);
+    expect(shown()).toEqual([true, true]);
 
     // A member who may not rename the space does not hold its key either.
     await render({
       recordLedgerEnabled: true,
       space: { id: "space-a", name: "Support", canRename: false, canDelete: false, botCount: 0 },
     });
-    expect(shown()).toBe(false);
+    expect(shown()).toEqual([false, false]);
   });
 
   it("renames the space when its name field is left", async () => {

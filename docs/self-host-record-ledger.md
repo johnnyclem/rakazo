@@ -186,6 +186,48 @@ What this protects, and what it does not:
 - An owner who holds a Space key can decrypt that Space's database content if they ever get a copy
   of it. Keep identities as you would any private key.
 
+## A place of your own
+
+An owner key decides who can *read* a Space's ledger. Where its anchored copy is *kept* is a second
+question: by default the gateway anchors to a canister the gateway's operator owns, so the same host
+that could rewrite the gateway's disk also holds the on-chain copy. A Space's owner can name a
+canister they hold instead, and that Space's streams are anchored there, with every other Space
+unaffected.
+
+In the app: **Settings → Space → Backup location**. It is offered to an owner once the Space has a
+backup key, and only where the deployment's gateway can reach a replica to anchor on (it runs with
+`--ic-host`; the gateway guide's [several owners](https://github.com/johnnyclem/agentvault/blob/main/docs/guides/ledger.md#several-owners-on-one-gateway)
+section covers it). Naming a canister shows the identity the owner has to allow there, with a copy
+button:
+
+```sh
+# The owner, once, with the identity that created the canister:
+agentvault memory --canister-id <canister id> --host https://icp-api.io --identity owner.pem authorize <the ID shown>
+```
+
+Until that is done the row says it is not allowed to write there yet; it catches up by itself once
+it is, and says so while it does. Only what is wrong is shown: a place that works shows nothing
+beside its ID.
+
+What the owner gets, and what the host keeps:
+
+- The gateway's identity can add commits and create branches on that canister. It cannot
+  rewrite or remove one, delete or reinstall the canister, or change who may write: the owner
+  controls all of that, and `memory deauthorize` stops the gateway at once. Reading needs no key, so
+  the owner can always `ledger rebuild` from their canister whatever the host does.
+- Naming another canister anchors the whole of each stream there, from its first entry, so the new
+  canister can be rebuilt on its own. The old one keeps what it holds: a canister cannot be told to
+  forget. **Remove** puts the Space's streams back on the gateway's own canister, or on none.
+- One owner's canister that refuses, or cannot be reached, holds up only that Space's streams.
+- It does not change what the host can read. Pair it with an owner key: a copy the host cannot
+  open, kept where the host cannot remove it.
+
+The place is kept in the database and told to the gateway by the API; if the gateway was
+unreachable when it was named, the worker brings every stream up to date on a later sweep. A stream
+is told its place before its first entry is sent. A gateway that cannot be told does not hold back
+the backups themselves: they are sent, and whatever was anchored meanwhile is anchored again at the
+owner's canister once it is told, from the stream's first entry.
+
 ## When a stream stops
 
 A stream stops shipping when the ledger already holds a different entry at one of its positions,
@@ -227,8 +269,9 @@ Consider this before turning the ledger on where people expect a deleted note to
 ## Not yet
 
 Nothing in the apps shows a bot's ledger status, and restoring is an operator command. An owner
-makes and removes keys on web and desktop; the mobile app does not, because holding a private key
-there needs its own place to keep it, so an account made there is not offered a key at signup. There
-is no key derived from a wallet, and adding a key does not rotate the Space key, so a Space that
-already has streams stays readable by the master key. Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
+makes and removes keys, and names a place of their own, on web and desktop; the mobile app does
+neither, because holding a private key there needs its own place to keep it, so an account made
+there is not offered a key at signup. There is no key derived from a wallet, and adding a key does
+not rotate the Space key, so a Space that already has streams stays readable by the master key.
+Restore trusts the ledger to return everything it was sent; a ledger that drops its newest entries
 is noticed only when the database survives to compare (it warns), or by verifying the anchor.
