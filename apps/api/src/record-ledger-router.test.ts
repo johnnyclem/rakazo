@@ -22,7 +22,7 @@ const outsider = { spaceId: "space-1", userId: "outsider-1", email: "x@rakazo.te
 type KeyRow = { id: string; spaceId: string; recipient: string; label: string | null };
 
 /** A ledger that can keep a stream's copy at a place of the owner's own, and does nothing else. */
-function fakeProvider({ anchoring = true } = {}): RecordLedgerProvider {
+function fakeProvider({ anchoring = true, provisioning = false } = {}): RecordLedgerProvider {
   const unused = async () => {
     throw new Error("The routes under test never read or write the ledger");
   };
@@ -50,6 +50,19 @@ function fakeProvider({ anchoring = true } = {}): RecordLedgerProvider {
       },
     }),
     ...(anchoring ? { anchoring: place } : {}),
+    ...(provisioning
+      ? {
+          provisioning: {
+            ownerKey: "ed25519" as const,
+            available: async () => true,
+            begin: vi.fn(async () => ({
+              state: "pending" as const,
+              destination: null,
+              error: null,
+            })),
+          },
+        }
+      : {}),
     append: unused,
     read: unused,
     list: unused,
@@ -61,10 +74,22 @@ function ledgerDeps(
     announcedUnderMasterKey?: boolean;
     recordLedgerEnabled?: boolean;
     provider?: RecordLedgerProvider;
+    /** A deployment that charges, and what the Space's organization pays; absent means it does not charge. */
+    billing?: { status: string | null; paidAt: Date | null } | null;
   } = {},
 ) {
   const keys: Array<KeyRow & { createdAt: Date }> = [];
   const destinations = new Map<string, string>();
+  const provisions = new Map<
+    string,
+    {
+      spaceId: string;
+      ownerKey: string;
+      state: string;
+      destination: string | null;
+      error: string | null;
+    }
+  >();
   const roles = new Map([
     ["space-1:owner-1", "owner"],
     ["space-1:member-1", "member"],
@@ -125,6 +150,23 @@ function ledgerDeps(
         destinations.delete(where.spaceId);
       }),
     },
+    recordLedgerProvision: {
+      findUnique: vi.fn(
+        async ({ where }: { where: { spaceId: string } }) => provisions.get(where.spaceId) ?? null,
+      ),
+      create: vi.fn(async ({ data }: { data: { spaceId: string; ownerKey: string } }) => {
+        provisions.set(data.spaceId, { ...data, state: "pending", destination: null, error: null });
+      }),
+      findMany: vi.fn(async () =>
+        [...provisions.values()].filter((row) => row.state === "pending"),
+      ),
+      update: vi.fn(async ({ where, data }: { where: { spaceId: string }; data: object }) => {
+        Object.assign(provisions.get(where.spaceId)!, data);
+      }),
+    },
+    space: {
+      findUnique: vi.fn(async () => ({ organization: { billing: options.billing ?? null } })),
+    },
     // The Space has no streams here; what happens to streams is tested against a real database.
     recordLedgerStream: { findMany: vi.fn(async () => []), update: vi.fn() },
     $queryRaw: vi.fn(async () => []),
@@ -137,13 +179,23 @@ function ledgerDeps(
     dataDir: "/tmp/rakazo-router-test",
     recordLedger:
       options.recordLedgerEnabled === false ? undefined : (options.provider ?? fakeProvider()),
+    ...(options.billing === undefined ? {} : { billing: {} }),
+    events: { publishSpaceChange: vi.fn(async () => undefined) },
   } as unknown as RouterDeps;
   const handler = new RPCHandler(createRouter(deps), {
     clientInterceptors: [onError((error, { path, signal }) => handleRpcError(error, path, signal))],
   });
   async function call(
     actor: Actor,
-    path: "keys" | "offer" | "addKey" | "removeKey" | "anchor" | "setAnchor" | "clearAnchor",
+    path:
+      | "keys"
+      | "offer"
+      | "addKey"
+      | "removeKey"
+      | "anchor"
+      | "setAnchor"
+      | "clearAnchor"
+      | "provision",
     input: Record<string, unknown> = {},
   ) {
     const { response } = await handler.handle(
@@ -162,7 +214,7 @@ function ledgerDeps(
       },
     };
   }
-  return { keys, roles, destinations, call };
+  return { keys, roles, destinations, provisions, deps, call };
 }
 
 describe("recordLedger routes", () => {
@@ -271,7 +323,13 @@ describe("recordLedger routes", () => {
 
   it("keeps where the owner's backups are kept, and reports it", async () => {
     const { call, destinations } = ledgerDeps();
-    const none = { label: "Place", writer: "fake-writer", destination: null, status: null };
+    const none = {
+      label: "Place",
+      writer: "fake-writer",
+      destination: null,
+      status: null,
+      provision: { offered: false, state: null },
+    };
     expect((await call(owner, "anchor")).body.json).toEqual(none);
 
     const set = await call(owner, "setAnchor", { destination: "place-aaaa" });
@@ -318,6 +376,7 @@ describe("recordLedger routes", () => {
       writer: null,
       destination: null,
       status: null,
+      provision: { offered: false, state: null },
     });
     expect((await without.call(owner, "setAnchor", { destination: "place-aaaa" })).status).toBe(
       404,
@@ -365,5 +424,153 @@ describe("recordLedger routes", () => {
       expect(JSON.stringify(event)).not.toContain(recipient);
     }
     expect(procedureSecurityEvent(["recordLedger", "keys"], {}, owner)).toBeUndefined();
+  });
+});
+
+describe("recordLedger.provision", () => {
+  const OWNER_KEY = "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw";
+  const PAID = { status: "active", paidAt: new Date("2026-11-01T00:00:00Z") };
+  const begun = (provider: RecordLedgerProvider) => vi.mocked(provider.provisioning!.begin);
+  const make = (options: Parameters<typeof ledgerDeps>[0] = {}) => {
+    const provider = fakeProvider({ provisioning: true });
+    return { provider, ...ledgerDeps({ provider, ...options }) };
+  };
+
+  it("offers a place to the owner, and has the ledger make one when asked", async () => {
+    const { call, provider, provisions } = make();
+    expect((await call(owner, "anchor")).body.json).toMatchObject({
+      provision: { offered: true, state: null },
+    });
+
+    const asked = await call(owner, "provision", { ownerKey: OWNER_KEY });
+
+    expect(asked.status).toBe(200);
+    expect(asked.body.json).toMatchObject({ provision: { offered: false, state: "pending" } });
+    expect(begun(provider)).toHaveBeenCalledExactlyOnceWith(
+      "space-space-1",
+      OWNER_KEY,
+      expect.any(AbortSignal),
+    );
+    expect([...provisions.values()]).toMatchObject([{ spaceId: "space-1", ownerKey: OWNER_KEY }]);
+  });
+
+  it("asking again changes nothing", async () => {
+    const { call, provisions } = make();
+
+    await call(owner, "provision", { ownerKey: OWNER_KEY });
+    const again = await call(owner, "provision", { ownerKey: OWNER_KEY });
+
+    expect(again.status).toBe(200);
+    expect(provisions.size).toBe(1);
+  });
+
+  describe("on a deployment that charges", () => {
+    it("offers a place only to a paid plan", async () => {
+      const { call, provider, provisions } = make({ billing: null });
+      expect((await call(owner, "anchor")).body.json).toMatchObject({
+        provision: { offered: false, state: null },
+      });
+
+      const refused = await call(owner, "provision", { ownerKey: OWNER_KEY });
+
+      expect(refused.status).toBe(403);
+      expect(refused.body.json.code).toBe("plan_required");
+      expect(provisions.size).toBe(0);
+      expect(begun(provider)).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a subscription that was never paid", { status: "trialing", paidAt: null }],
+      ["one that has ended", { status: "canceled", paidAt: new Date("2026-10-01T00:00:00Z") }],
+    ])("does not count %s as a paid plan", async (_label, billing) => {
+      const { call } = make({ billing });
+
+      expect((await call(owner, "anchor")).body.json).toMatchObject({
+        provision: { offered: false },
+      });
+      expect((await call(owner, "provision", { ownerKey: OWNER_KEY })).status).toBe(403);
+    });
+
+    it("lets a paid plan have one", async () => {
+      const { call } = make({ billing: PAID });
+
+      expect((await call(owner, "anchor")).body.json).toMatchObject({
+        provision: { offered: true },
+      });
+      expect((await call(owner, "provision", { ownerKey: OWNER_KEY })).status).toBe(200);
+    });
+  });
+
+  it("is for the Space's owner alone, and stores nothing for anyone else", async () => {
+    const { call, provider, provisions } = make();
+
+    for (const actor of [member, outsider]) {
+      expect((await call(actor, "provision", { ownerKey: OWNER_KEY })).status).toBe(403);
+    }
+
+    expect(provisions.size).toBe(0);
+    expect(begun(provider)).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["nothing", {}],
+    ["an empty key", { ownerKey: "" }],
+    ["a key that is too short", { ownerKey: "abc" }],
+    ["a key that is too long", { ownerKey: "A".repeat(44) }],
+    ["characters outside base64url", { ownerKey: `${"A".repeat(42)}+` }],
+    ["a private key", { ownerKey: "-----BEGIN PRIVATE KEY-----" }],
+    ["anything more", { ownerKey: OWNER_KEY, controllers: ["x"] }],
+  ])("refuses %s before asking the ledger", async (_label, input) => {
+    const { call, provider, provisions } = make();
+
+    expect((await call(owner, "provision", input)).status).toBe(400);
+
+    expect(provisions.size).toBe(0);
+    expect(begun(provider)).not.toHaveBeenCalled();
+  });
+
+  it("is not there where the ledger cannot make a place, or none is kept", async () => {
+    const without = ledgerDeps({ provider: fakeProvider() });
+    expect((await without.call(owner, "provision", { ownerKey: OWNER_KEY })).status).toBe(404);
+    expect((await without.call(owner, "anchor")).body.json).toMatchObject({
+      provision: { offered: false },
+    });
+
+    const off = ledgerDeps({ recordLedgerEnabled: false });
+    expect((await off.call(owner, "provision", { ownerKey: OWNER_KEY })).status).toBe(404);
+  });
+
+  it("will not make one for a Space that already names a place, or asked with another key", async () => {
+    const named = make();
+    await named.call(owner, "setAnchor", { destination: "place-aaaa" });
+    expect((await named.call(owner, "anchor")).body.json).toMatchObject({
+      provision: { offered: false },
+    });
+    const refused = await named.call(owner, "provision", { ownerKey: OWNER_KEY });
+    expect(refused.status).toBe(409);
+    expect(refused.body.json.code).toBe("provision_exists");
+
+    const asked = make();
+    await asked.call(owner, "provision", { ownerKey: OWNER_KEY });
+    const other = await asked.call(owner, "provision", {
+      ownerKey: "GX9rI-FshTLGq8g4-s1ep4m-DHaykgM0A5v6iz02jWE",
+    });
+    expect(other.status).toBe(409);
+    expect([...asked.provisions.values()]).toMatchObject([{ ownerKey: OWNER_KEY }]);
+  });
+
+  it("is audited as a credential created, without the key", () => {
+    const event = procedureSecurityEvent(
+      ["recordLedger", "provision"],
+      { ownerKey: OWNER_KEY },
+      owner,
+    );
+
+    expect(event).toMatchObject({
+      type: "credential.created",
+      userId: owner.userId,
+      metadata: { procedure: "recordLedger.provision", kind: "record_ledger_provision" },
+    });
+    expect(JSON.stringify(event)).not.toContain(OWNER_KEY);
   });
 });

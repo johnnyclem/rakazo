@@ -6,16 +6,20 @@ import type {
   RecordLedgerListRequest,
   RecordLedgerListResult,
   RecordLedgerProvider,
+  RecordLedgerProvisioning,
+  RecordLedgerProvisionSnapshot,
   RecordLedgerReadRequest,
   RecordLedgerReadResult,
 } from "@rakazo/adapter-kit";
 import {
   RecordLedgerConflict,
   RecordLedgerDestinationInvalid,
+  RecordLedgerProvisionRefused,
   RecordLedgerUnavailable,
 } from "@rakazo/adapter-kit";
 import { secureHttpOrigin } from "@rakazo/contracts";
 import { z } from "zod";
+import { isEd25519PublicKey, ownerAddress } from "./agentvault-owner-address.js";
 import { readBoundedText } from "./connector-http.js";
 
 /** The gateway's own limits: 256 KiB a payload, and an 8 MiB body that base64 must fit in. */
@@ -55,6 +59,17 @@ const anchorState = z.object({
 });
 
 /** A canister id: five groups of five characters ending in `cai`, as the network writes them. */
+const provisionState = z.object({
+  state: z.enum(["pending", "ready", "failed"]),
+  canisterId: z.string().nullable(),
+  error: z.string().nullable(),
+});
+const REFUSALS = {
+  invalid_owner: "invalid_owner",
+  invalid_key: "invalid_owner",
+  key_conflict: "key_conflict",
+  limit_reached: "limit_reached",
+} as const;
 const CANISTER_ID = /^[a-z0-9]{5}(-[a-z0-9]{5}){3}-cai$/;
 /** What the canister says when the owner has not allowed the gateway to write to it. */
 const NOT_ALLOWED = "neither the repo owner nor an authorized principal";
@@ -136,6 +151,56 @@ export class AgentVaultRecordLedger implements RecordLedgerProvider {
         // The gateway passes on the canister's own words; only this adapter reads them.
         error: error === null ? null : error.includes(NOT_ALLOWED) ? "not_allowed" : "failed",
       };
+    },
+  };
+
+  /** The gateway can also make the canister, and hand it over, when it was started to. */
+  readonly provisioning: RecordLedgerProvisioning = {
+    ownerKey: "ed25519",
+    available: async (signal) => {
+      // The gateway says whether it was started to make canisters; an older one says nothing.
+      const { response, body } = await this.call("/v1/identity", { method: "GET" }, signal);
+      if (response.status === 404) return false;
+      if (!response.ok) throw refusal(response.status);
+      return (body as { provisioning?: unknown } | undefined)?.provisioning === true;
+    },
+    begin: async (key, ownerKey, signal): Promise<RecordLedgerProvisionSnapshot> => {
+      if (!isEd25519PublicKey(ownerKey)) {
+        throw new RecordLedgerProvisionRefused(
+          "invalid_owner",
+          "The owner key is not an Ed25519 public key",
+        );
+      }
+      const { response, body } = await this.call(
+        "/v1/canisters",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ key, owner: ownerAddress(ownerKey) }),
+        },
+        signal,
+      );
+      if (response.ok) {
+        const parsed = provisionState.safeParse(body);
+        if (!parsed.success) throw new RecordLedgerUnavailable("unavailable");
+        return {
+          state: parsed.data.state,
+          destination: parsed.data.canisterId,
+          error: parsed.data.error,
+        };
+      }
+      const named = (body as { error?: unknown; message?: unknown } | undefined) ?? {};
+      const reason =
+        typeof named.error === "string"
+          ? REFUSALS[named.error as keyof typeof REFUSALS]
+          : undefined;
+      if (reason) {
+        throw new RecordLedgerProvisionRefused(
+          reason,
+          typeof named.message === "string" ? named.message : "The ledger turned the request down",
+        );
+      }
+      throw refusal(response.status);
     },
   };
 

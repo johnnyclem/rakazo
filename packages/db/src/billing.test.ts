@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { hasModelAccess, memberHasModelAccess, ownerHadTrial } from "./billing.js";
+import {
+  hasModelAccess,
+  memberHasModelAccess,
+  ownerHadTrial,
+  spaceHasPaidPlan,
+} from "./billing.js";
 import type { PrismaClient } from "./client.js";
 
 describe("model access", () => {
@@ -57,5 +62,44 @@ it("looks up the membership by space and user alone when given a whole run", asy
   await memberHasModelAccess(client, run);
   expect(findUnique.mock.calls[0]?.[0].where).toEqual({
     spaceId_userId: { spaceId: "space-1", userId: "user-1" },
+  });
+});
+
+describe("a paid plan", () => {
+  const paidAt = new Date("2030-01-01T00:00:00.000Z");
+  const space = (billing: { status: string | null; paidAt: Date | null } | null) =>
+    ({
+      space: { findUnique: vi.fn(async () => ({ organization: { billing } })) },
+    }) as unknown as PrismaClient;
+
+  it.each([
+    ["active", paidAt, true],
+    ["past_due", paidAt, true],
+    // Access without ever having paid is a trial, which is not a paid plan.
+    ["trialing", null, false],
+    ["active", null, false],
+    ["canceled", paidAt, false],
+    ["incomplete", paidAt, false],
+    [null, paidAt, false],
+  ])("%s, paid at %s: %s", async (status, at, paid) => {
+    expect(await spaceHasPaidPlan(space({ status, paidAt: at }), "space-1")).toBe(paid);
+  });
+
+  it("is not one without a subscription, or without the Space", async () => {
+    expect(await spaceHasPaidPlan(space(null), "space-1")).toBe(false);
+    const missing = {
+      space: { findUnique: vi.fn(async () => null) },
+    } as unknown as PrismaClient;
+    expect(await spaceHasPaidPlan(missing, "gone")).toBe(false);
+  });
+
+  it("reads the plan of the Space's own organization", async () => {
+    const prisma = space({ status: "active", paidAt });
+
+    await spaceHasPaidPlan(prisma, "space-7");
+
+    expect(prisma.space.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "space-7" } }),
+    );
   });
 });

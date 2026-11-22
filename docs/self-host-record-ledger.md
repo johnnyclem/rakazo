@@ -228,6 +228,34 @@ is told its place before its first entry is sent. A gateway that cannot be told 
 the backups themselves: they are sent, and whatever was anchored meanwhile is anchored again at the
 owner's canister once it is told, from the stream's first entry.
 
+### Having a place made for you
+
+An owner who has no place of their own to name can have one made. **Settings → Space → Backup
+location → Create** makes a key on the owner's device, offers it as a file (`rakazo-owner-key.pem`, an
+Ed25519 key that stock tools read), and only once it is downloaded or copied asks the ledger for a
+place held by that key. The server is given the public half alone. The ledger creates the place,
+installs it, and hands it over: the owner is then the only one who can change who may write or take
+it down, and the ledger keeps a writer's access so it can keep anchoring. It takes a short while, and
+the row says "Creating…" until it is ready, when it becomes the Space's place like one the owner
+named. Nobody can lose the file and get it back from us: we do not keep a copy.
+
+For an operator:
+
+- The gateway must be started to make places (`ledger serve --provision-wasm … --max-canisters …`,
+  see its [guide](https://github.com/johnnyclem/agentvault/blob/main/docs/guides/ledger.md#creating-a-canister-for-an-owner));
+  one that was not, or an older one, simply never shows **Create**. Nothing else is configured here.
+- **It spends the gateway's cycles.** The gateway's own cap on how many it will make, and what each is
+  funded with, are the limit; a Space asks once.
+- **On a deployment that charges** (billing is on), only an organization on a paid plan is offered
+  **Create**: a subscription that grants access and was paid for. A trial that never paid is not one,
+  and nor is a one-time credit top-up. A deployment without billing offers it to every owner, since
+  the operator who set the gateway up is the one paying.
+- A request that fails is asked again after five minutes, and one the ledger refused for good (an
+  owner key it will not accept, or its cap reached) is not asked again. Neither shows the ledger's own
+  words to anyone; the row just says it could not be made, and **Set** still works.
+- A Space that already names a place, or already asked with another key, is not offered one.
+  A place that becomes ready after the owner named their own is left alone.
+
 ## When a stream stops
 
 A stream stops shipping when the ledger already holds a different entry at one of its positions,
@@ -269,7 +297,7 @@ Consider this before turning the ledger on where people expect a deleted note to
 ## Not yet
 
 Nothing in the apps shows a bot's ledger status, and restoring is an operator command. An owner
-makes and removes keys, and names a place of their own, on web and desktop; the mobile app does
+makes and removes keys, names a place of their own, and has one made, on web and desktop; the mobile app does
 neither, because holding a private key there needs its own place to keep it, so an account made
 there is not offered a key at signup. There is no key derived from a wallet, and adding a key does
 not rotate the Space key, so a Space that already has streams stays readable by the master key.

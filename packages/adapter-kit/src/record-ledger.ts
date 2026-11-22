@@ -113,6 +113,51 @@ export interface RecordLedgerAnchoring {
   status(stream: string, signal: AbortSignal): Promise<RecordLedgerAnchorStatus | null>;
 }
 
+/** How far making a place for an owner has got. */
+export type RecordLedgerProvisionState = "pending" | "ready" | "failed";
+
+export interface RecordLedgerProvisionSnapshot {
+  state: RecordLedgerProvisionState;
+  /** The place, once it is ready; usable as a destination. */
+  destination: string | null;
+  /** Why it stopped, for operators to read. Never shown to people. */
+  error: string | null;
+}
+
+/** Why the ledger will not make a place for this owner or this request. */
+export type RecordLedgerProvisionRefusal = "invalid_owner" | "key_conflict" | "limit_reached";
+
+/** The ledger turned a request for a place down; the message is for operators. */
+export class RecordLedgerProvisionRefused extends Error {
+  override readonly name = "RecordLedgerProvisionRefused";
+  constructor(
+    readonly reason: RecordLedgerProvisionRefusal,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * A ledger that can make a place for an owner to keep their stream's off-site copy, and hand it
+ * over, so the owner holds it from the start and nobody who runs the ledger can take it back. The
+ * owner is an Ed25519 public key: the private half stays with them. The place that comes back is
+ * a destination for `RecordLedgerAnchoring`.
+ */
+export interface RecordLedgerProvisioning {
+  /** The kind of key an owner holds. */
+  readonly ownerKey: "ed25519";
+  /** Whether the ledger can make a place now; false when it was not set up to. */
+  available(signal: AbortSignal): Promise<boolean>;
+  /**
+   * Starts making a place for `ownerKey`, or says where an earlier request under `key` has got to.
+   * Safe to repeat: one key never makes two places, and a request that failed is picked up again.
+   * Throws `RecordLedgerProvisionRefused` for a request it will not serve and
+   * `RecordLedgerUnavailable` when it cannot be reached.
+   */
+  begin(key: string, ownerKey: string, signal: AbortSignal): Promise<RecordLedgerProvisionSnapshot>;
+}
+
 /**
  * An append-only store outside this deployment that keeps each stream in order and makes
  * rewriting it detectable. Product code seals every payload before it gets here. Core runs
@@ -122,6 +167,8 @@ export interface RecordLedgerProvider {
   describe(): AdapterDescriptor<RecordLedgerCapabilities>;
   /** Present when owners can name where their streams' off-site copy is kept. */
   readonly anchoring?: RecordLedgerAnchoring;
+  /** Present when it can also make that place for an owner who has none. */
+  readonly provisioning?: RecordLedgerProvisioning;
   /**
    * Appends `entries` to the stream. Entries the stream already holds are accepted when
    * they are identical, so a caller that never saw the answer sends the same entries again.

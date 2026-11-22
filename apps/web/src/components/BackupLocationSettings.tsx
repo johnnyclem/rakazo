@@ -18,8 +18,11 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, MoreHorizontal } from "lucide-react";
 import { useState } from "react";
+import type { OwnerIdentityDraft } from "../lib/owner-identity";
+import { createOwnerIdentity, downloadOwnerIdentity } from "../lib/owner-identity";
 import { useSave, useSpaceQueries } from "../lib/query";
 import { errorText } from "../lib/user-error";
+import { KeepKeyDialog } from "./KeepKeyDialog";
 import { SettingsGroup, SettingsRow } from "./SettingsRows";
 
 /** An identity the owner has to allow where their backups are kept, with a way to copy it. */
@@ -145,6 +148,9 @@ export function BackupLocationSettings() {
   const anchorQuery = useQuery(anchorOptions);
   const keysQuery = useQuery(recordLedger.keys.queryOptions());
   const [editing, setEditing] = useState(false);
+  // The owner's key is made here, on this device, and kept before the ledger is asked for a place.
+  const [identity, setIdentity] = useState<OwnerIdentityDraft | null>(null);
+  const makeKey = useSave({ save: () => createOwnerIdentity(), onSaved: setIdentity });
   const clear = useSave({
     save: (_input, rpc) => rpc.recordLedger.clearAnchor(),
     stale: [anchorOptions.queryKey],
@@ -152,27 +158,63 @@ export function BackupLocationSettings() {
 
   const anchor = anchorQuery.data;
   const label = anchor?.label;
-  const shownError = clear.error
-    ? errorText(clear.error, t`Couldn't remove where your backups are kept`)
-    : anchorQuery.isError
-      ? errorText(anchorQuery.error, t`Couldn't load where your backups are kept`)
-      : null;
+  const shownError = makeKey.error
+    ? errorText(makeKey.error, t`Couldn't create a key`)
+    : clear.error
+      ? errorText(clear.error, t`Couldn't remove where your backups are kept`)
+      : anchorQuery.isError
+        ? errorText(anchorQuery.error, t`Couldn't load where your backups are kept`)
+        : null;
   if (!anchor || !label) return shownError ? <ShownError text={shownError} /> : null;
-  const offered = anchor.destination !== null || (keysQuery.data?.keys.length ?? 0) > 0;
+  const { provision } = anchor;
+  const offered =
+    anchor.destination !== null ||
+    provision.state !== null ||
+    (keysQuery.data?.keys.length ?? 0) > 0;
   if (!offered) return null;
 
   return (
     <div data-testid="backup-location-settings" className="space-y-2">
       <SettingsGroup title={t`Backup location`}>
         {anchor.destination === null ? (
-          <SettingsRow
-            label={label}
-            control={
-              <Button size="sm" onClick={() => setEditing(true)}>
-                <Trans>Set</Trans>
-              </Button>
-            }
-          />
+          provision.state === "pending" ? (
+            // Being made: nothing to do but wait, and the screen reads again when it is ready.
+            <SettingsRow
+              label={
+                <span className="text-muted-foreground">
+                  <Trans>Creating…</Trans>
+                </span>
+              }
+            />
+          ) : (
+            <SettingsRow
+              label={
+                provision.state === "failed" ? (
+                  <span className="text-muted-foreground">
+                    <Trans>Couldn't create it</Trans>
+                  </span>
+                ) : (
+                  label
+                )
+              }
+              control={
+                <>
+                  {provision.offered ? (
+                    <Button size="sm" disabled={makeKey.pending} onClick={() => makeKey.run()}>
+                      <Trans>Create</Trans>
+                    </Button>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant={provision.offered ? "ghost" : "default"}
+                    onClick={() => setEditing(true)}
+                  >
+                    <Trans>Set</Trans>
+                  </Button>
+                </>
+              }
+            />
+          )
         ) : (
           <SettingsRow
             label={<p className="break-all font-mono text-body-sm">{anchor.destination}</p>}
@@ -206,6 +248,21 @@ export function BackupLocationSettings() {
       {shownError ? <ShownError text={shownError} /> : null}
       {editing ? (
         <LocationDialog anchor={anchor} label={label} onClose={() => setEditing(false)} />
+      ) : null}
+      {identity ? (
+        <KeepKeyDialog
+          testId="owner-identity-dialog"
+          title={<Trans>Save your key</Trans>}
+          description={
+            <Trans>We don't keep a copy. It's the only key to your backup location.</Trans>
+          }
+          file={identity.file}
+          onDownload={() => downloadOwnerIdentity(identity)}
+          save={(rpc) => rpc.recordLedger.provision({ ownerKey: identity.ownerKey })}
+          stale={[anchorOptions.queryKey]}
+          failure={t`Couldn't create your backup location`}
+          onClose={() => setIdentity(null)}
+        />
       ) : null}
     </div>
   );

@@ -203,6 +203,7 @@ import {
 } from "./payments.js";
 import { MessageReactionSchema } from "./reactions.js";
 import {
+  OwnerIdentityPublicKeySchema,
   OwnerKeyRecipientSchema,
   RecordLedgerAnchorSchema,
   RecordLedgerDestinationSchema,
@@ -297,7 +298,7 @@ const threadSendWithRoutinesInput = threadSendFields.safeExtend({
 });
 
 /** What a Space change signal tells apps to read again; each is a `notifications.subscribe` frame. */
-export const SpaceChangeKind = z.enum(["computerUpdates", "runs", "routines"]);
+export const SpaceChangeKind = z.enum(["computerUpdates", "runs", "routines", "recordLedger"]);
 export type SpaceChangeKind = z.infer<typeof SpaceChangeKind>;
 
 const spaceName = z.string().trim().min(1).max(60);
@@ -1630,6 +1631,13 @@ export const appContract = {
       .output(RecordLedgerAnchorSchema),
     /** Back to where the ledger keeps its own copy. */
     clearAnchor: oc.output(RecordLedgerAnchorSchema),
+    /**
+     * Has the ledger make a place for the owner who holds `ownerKey`, and hand it over. It finishes
+     * in the background and becomes the Space's place when it is ready; asking again changes nothing.
+     */
+    provision: oc
+      .input(z.object({ ownerKey: OwnerIdentityPublicKeySchema }).strict())
+      .output(RecordLedgerAnchorSchema),
     /** Adding a key already held changes nothing. */
     addKey: oc
       .input(z.object({ recipient: OwnerKeyRecipientSchema }).strict())
