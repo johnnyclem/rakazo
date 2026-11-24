@@ -12,7 +12,7 @@ const keys = vi.hoisted(() => ({
   pending: false,
   discard: vi.fn(),
 }));
-vi.mock("../../components/BackupKeyDialog", () => ({
+vi.mock("../../components/spaces/BackupKeyDialog", () => ({
   useNewBackupKey: () => ({
     create: { run: keys.run, error: keys.error, pending: keys.pending },
     draft: keys.draft,

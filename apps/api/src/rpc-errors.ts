@@ -1,33 +1,28 @@
 import { ORPCError, ValidationError } from "@orpc/server";
 import {
+  ConnectorAuthUnavailableError,
   SandboxAllowanceUsedError,
   SandboxDamagedError,
+  SandboxDiskTooLargeError,
   SandboxRateLimitError,
   SandboxUnavailableError,
   SandboxUnresponsiveError,
   VoiceAccountError,
 } from "@rakazo/adapter-kit";
 import { ComputerRecoveryRequiredError } from "@rakazo/adapters";
-import type { ClientErrorKind } from "@rakazo/core";
+import { ConnectionSetupError } from "@rakazo/contracts";
 import { ClientError } from "@rakazo/core";
 import { databaseOutage, IsolationError, ProviderTransactionBusyError } from "@rakazo/db";
-import { enrichLogContext, getLogContext, getLogger } from "@rakazo/logging";
+import { enrichLogContext, getLogContext, getLogger, wasReportedError } from "@rakazo/logging";
 import { markExpectedFailure } from "@rakazo/logging/hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { voiceAccountErrorStatus } from "./voice.js";
+import { clientErrorStatus } from "./client-error-status.js";
+import { voiceAccountErrorStatus } from "./voice/http-errors.js";
 
 /** How long a client waits before asking again while the database fails over. */
 export const DATABASE_RETRY_AFTER_SECONDS = 5;
 const DATABASE_UNAVAILABLE = "db.unavailable";
-
-const CLIENT_ERROR_STATUS: Record<ClientErrorKind, number> = {
-  BAD_REQUEST: 400,
-  FORBIDDEN: 403,
-  NOT_FOUND: 404,
-  CONFLICT: 409,
-  TOO_MANY_REQUESTS: 429,
-};
 
 /**
  * Whether a request failed because the database is unavailable. The outage logs it once for
@@ -47,7 +42,8 @@ export function requestHitDatabaseOutage(): boolean {
 
 /**
  * Hono's default prints the stack and answers 500. Requests already log their failure, and a
- * database outage answers 503 so clients try again.
+ * database outage answers 503 so clients try again, as does a client error its thrower already
+ * logged as an outage.
  */
 export function handleHttpError(error: Error, c: Context): Response {
   if (error instanceof HTTPException) return error.getResponse();
@@ -55,6 +51,10 @@ export function handleHttpError(error: Error, c: Context): Response {
     return c.text("Service Unavailable", 503, {
       "Retry-After": String(DATABASE_RETRY_AFTER_SECONDS),
     });
+  if (error instanceof ClientError && wasReportedError(error)) {
+    markExpectedFailure();
+    return c.json({ error: error.message }, clientErrorStatus(error.kind));
+  }
   return c.text("Internal Server Error", 500);
 }
 
@@ -77,14 +77,24 @@ export function handleRpcError(
   if (failedOnDatabaseOutage(error)) {
     throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
   }
-  // A domain refusal carries its own answer, so no route translates it: the caller learns what
-  // they did, nothing failed.
+  // A typed client error carries its own answer, so no route translates it.
   if (error instanceof ClientError) {
-    throw new ORPCError(error.code, {
-      status: CLIENT_ERROR_STATUS[error.kind],
+    const answer = new ORPCError(error.code, {
+      status: clientErrorStatus(error.kind),
       message: error.message,
       cause: error,
     });
+    // An outage the caller is told to wait out is still reported, unless its thrower logged it.
+    if (wasReportedError(error)) markExpectedFailure();
+    else logUnexpectedRpcError(answer, path);
+    throw answer;
+  }
+  // What the person entered for a connection, or how their server answered its check.
+  if (error instanceof ConnectionSetupError) {
+    throw new ORPCError("BAD_REQUEST", { message: error.message, cause: error });
+  }
+  if (error instanceof ConnectorAuthUnavailableError) {
+    throw new ORPCError(error.code, { status: 400, message: error.message, cause: error });
   }
   // The user's own voice account refused the request: theirs to fix.
   if (error instanceof VoiceAccountError) {
@@ -135,6 +145,11 @@ export function handleRpcError(
   // A retry cannot fix a damaged computer; its message tells the user to Recover it.
   if (error instanceof SandboxDamagedError) {
     getLogger().warn(`rpc ${path.join("/")} computer damaged`);
+    throw new ORPCError("CONFLICT", { message: error.message, cause: error });
+  }
+  // The computer's disk outgrew every machine it can start on; its message tells the user to Recover it.
+  if (error instanceof SandboxDiskTooLargeError) {
+    getLogger().warn(`rpc ${path.join("/")} computer disk too large to start`);
     throw new ORPCError("CONFLICT", { message: error.message, cause: error });
   }
   // The client went away mid-request, so whatever failed next has no one waiting for it.
