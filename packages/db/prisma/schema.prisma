@@ -937,6 +937,10 @@ model RecordLedgerProvision {
   destination String?
   /// What the ledger last said when it failed, for operators. Never shown to people.
   error       String?
+  /// The owner pays for the place, rather than the plan covering it.
+  paid        Boolean  @default(false)
+  /// What the ledger last said is still to be paid, for the owner to see; null once it is, and when free.
+  payment     Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

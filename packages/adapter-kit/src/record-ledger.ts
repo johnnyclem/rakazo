@@ -116,12 +116,28 @@ export interface RecordLedgerAnchoring {
 /** How far making a place for an owner has got. */
 export type RecordLedgerProvisionState = "pending" | "ready" | "failed";
 
+/**
+ * What an owner has to pay before a place is made for them, in the words and amounts a person reads.
+ * The provider does the arithmetic, so nothing outside it knows what the amounts are counted in.
+ */
+export interface RecordLedgerPaymentDue {
+  /** What it is paid in, as the provider names it. */
+  asset: string;
+  /** The whole price, and how much of it has not arrived yet, as decimal numbers of `asset`. */
+  amount: string;
+  shortfall: string;
+  /** Where to send it: one string to copy. */
+  address: string;
+}
+
 export interface RecordLedgerProvisionSnapshot {
   state: RecordLedgerProvisionState;
   /** The place, once it is ready; usable as a destination. */
   destination: string | null;
   /** Why it stopped, for operators to read. Never shown to people. */
   error: string | null;
+  /** What is still to be paid for a request made `paid`; null once it is, and for one that is free. */
+  payment: RecordLedgerPaymentDue | null;
 }
 
 /** Why the ledger will not make a place for this owner or this request. */
@@ -155,7 +171,25 @@ export interface RecordLedgerProvisioning {
    * Throws `RecordLedgerProvisionRefused` for a request it will not serve and
    * `RecordLedgerUnavailable` when it cannot be reached.
    */
-  begin(key: string, ownerKey: string, signal: AbortSignal): Promise<RecordLedgerProvisionSnapshot>;
+  begin(
+    key: string,
+    ownerKey: string,
+    signal: AbortSignal,
+    options?: RecordLedgerProvisionOptions,
+  ): Promise<RecordLedgerProvisionSnapshot>;
+  /** Present when the ledger sells places to owners who pay, rather than only making them for the host's own. */
+  readonly sale?: {
+    /** Whether it sells now; false when it was not set up to. */
+    available(signal: AbortSignal): Promise<boolean>;
+  };
+}
+
+export interface RecordLedgerProvisionOptions {
+  /**
+   * The place is paid for by its owner. The snapshot says so until the payment has arrived, and the
+   * place is made after. Only asked of a ledger that has `sale`.
+   */
+  paid?: boolean;
 }
 
 /**

@@ -239,6 +239,11 @@ it down, and the ledger keeps a writer's access so it can keep anchoring. It tak
 the row says "Creating…" until it is ready, when it becomes the Space's place like one the owner
 named. Nobody can lose the file and get it back from us: we do not keep a copy.
 
+An owner whose organization is not on a paid plan can buy the place instead, where the gateway sells
+them. After they have saved the key, the row says what to send and where (an amount, and an address
+to copy) and "Waiting for payment". They pay from their own wallet; this app never holds or sees the
+money. When it has arrived the row goes on to "Creating…", as above. It shows within about a minute.
+
 For an operator:
 
 - The gateway must be started to make places (`ledger serve --provision-wasm … --max-canisters …`,
@@ -250,6 +255,16 @@ For an operator:
   **Create**: a subscription that grants access and was paid for. A trial that never paid is not one,
   and nor is a one-time credit top-up. A deployment without billing offers it to every owner, since
   the operator who set the gateway up is the one paying.
+- **Where the gateway sells places** (`ledger serve … --order-price-xdr`, see its
+  [guide](https://github.com/johnnyclem/agentvault/blob/main/docs/guides/ledger.md#selling-canisters-for-icp)),
+  an organization that is not on a paid plan is offered **Create** as well, and pays for its place
+  rather than the operator. The gateway sets the price and the address; this app only shows what the
+  gateway says is still to be paid. A gateway that does not sell keeps the rule above. A Space on a paid
+  plan is never asked to pay.
+- **An order that nobody pays for expires after a week** and the row then says it could not be made;
+  the owner can still **Set** a place of their own, but starting another purchase for that Space needs
+  the operator. Money sent after an order expired, or more than was asked, is not returned by this app:
+  the gateway's guide says how to return it.
 - A request that fails is asked again after five minutes, and one the ledger refused for good (an
   owner key it will not accept, or its cap reached) is not asked again. Neither shows the ledger's own
   words to anyone; the row just says it could not be made, and **Set** still works.

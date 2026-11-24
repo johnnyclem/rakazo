@@ -42,7 +42,7 @@ export function recordLedgerRoutes(ctx: RouterContext) {
         writer: null,
         destination: null,
         status: null,
-        provision: { offered: false, state: null },
+        provision: { offered: false, state: null, payment: null },
       };
     }
     const [anchor, provision] = await Promise.all([

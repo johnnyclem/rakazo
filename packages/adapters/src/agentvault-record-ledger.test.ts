@@ -368,7 +368,7 @@ describe("AgentVaultRecordLedger provisioning", () => {
 
     const snapshot = await gateway.provisioning.begin("space-1", OWNER_KEY, signal);
 
-    expect(snapshot).toEqual({ state: "pending", destination: null, error: null });
+    expect(snapshot).toEqual({ state: "pending", destination: null, error: null, payment: null });
     expect(seen).toHaveLength(1);
     expect(seen[0]!.url).toBe("https://ledger.example.test/v1/canisters");
     expect(seen[0]!.init).toMatchObject({ method: "POST", redirect: "error", signal });
@@ -385,6 +385,7 @@ describe("AgentVaultRecordLedger provisioning", () => {
       state: "ready",
       destination: CANISTER,
       error: null,
+      payment: null,
     });
   });
 
@@ -481,5 +482,230 @@ describe("AgentVaultRecordLedger provisioning", () => {
 
     expect((await unavailable(gateway.provisioning.available(signal))).reason).toBe("credential");
     expect(seen).toEqual([{ url: "https://ledger.example.test/v1/identity", method: "GET" }]);
+  });
+});
+
+describe("AgentVaultRecordLedger sales", () => {
+  const OWNER_KEY = "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw";
+  const OWNER_ADDRESS = "tek7g-2zmny-nzjwg-ansf7-rkxv6-z32x6-3flbb-ous5d-pygjx-wkhlc-jae";
+  const CANISTER = "uzt4z-lp777-77774-qaabq-cai";
+  const ACCOUNT = "ab".repeat(32);
+  /** An order as the gateway states it, with more fields than are read. */
+  const order = (state: string, extra: object = {}) => ({
+    key: "space-1",
+    owner: OWNER_ADDRESS,
+    state,
+    deposit: { owner: "yzoj6-sgrt2", subaccount: "cd".repeat(32), accountId: ACCOUNT },
+    price: { e8s: "135851881", expiresAt: "2026-11-23T04:06:28.545Z" },
+    paidE8s: "0",
+    shortfallE8s: "135851881",
+    canisterId: null,
+    error: null,
+    ...extra,
+  });
+  const paid = { paid: true };
+
+  it("sells only where the gateway says it was started with a price", async () => {
+    const identity = (extra: object) =>
+      ledger(() => Response.json({ principal: "yzoj6-sgrt2", ...extra }));
+
+    await expect(identity({ orders: true }).provisioning.sale!.available(signal)).resolves.toBe(
+      true,
+    );
+    await expect(identity({ orders: false }).provisioning.sale!.available(signal)).resolves.toBe(
+      false,
+    );
+    // A gateway from before it sold says nothing either way.
+    await expect(
+      identity({ provisioning: true }).provisioning.sale!.available(signal),
+    ).resolves.toBe(false);
+    const none = ledger(() =>
+      Response.json({ error: "anchoring_not_configured" }, { status: 404 }),
+    );
+    await expect(none.provisioning.sale!.available(signal)).resolves.toBe(false);
+    const refused = ledger(() => Response.json({ error: "unauthorized" }, { status: 401 }));
+    expect((await unavailable(refused.provisioning.sale!.available(signal))).reason).toBe(
+      "credential",
+    );
+  });
+
+  it("opens an order, not a canister, for a place that is paid for", async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const gateway = ledger((url, init) => {
+      seen.push({ url, init });
+      return Response.json(order("awaiting_payment"));
+    });
+
+    await gateway.provisioning.begin("space-1", OWNER_KEY, signal, paid);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe("https://ledger.example.test/v1/orders");
+    expect(seen[0]!.init).toMatchObject({ method: "POST", redirect: "error", signal });
+    expect(JSON.parse(String(seen[0]!.init.body))).toEqual({
+      key: "space-1",
+      owner: OWNER_ADDRESS,
+    });
+  });
+
+  it("still asks for a canister, as before, when nothing is paid", async () => {
+    const urls: string[] = [];
+    const gateway = ledger((url) => {
+      urls.push(url);
+      return Response.json(
+        {
+          key: "k",
+          owner: OWNER_ADDRESS,
+          state: "pending",
+          canisterId: null,
+          moduleHash: null,
+          error: null,
+        },
+        { status: 202 },
+      );
+    });
+
+    await gateway.provisioning.begin("space-1", OWNER_KEY, signal);
+    await gateway.provisioning.begin("space-1", OWNER_KEY, signal, {});
+    await gateway.provisioning.begin("space-1", OWNER_KEY, signal, { paid: false });
+
+    expect(urls).toEqual(Array(3).fill("https://ledger.example.test/v1/canisters"));
+  });
+
+  it("says what to send, how much, and where, in the numbers a person reads", async () => {
+    const gateway = ledger(() => Response.json(order("awaiting_payment")));
+
+    await expect(gateway.provisioning.begin("space-1", OWNER_KEY, signal, paid)).resolves.toEqual({
+      state: "pending",
+      destination: null,
+      error: null,
+      payment: { asset: "ICP", amount: "1.35851881", shortfall: "1.35851881", address: ACCOUNT },
+    });
+  });
+
+  it.each([
+    ["one that is part paid", "135851881", "35851881", "1.35851881", "0.35851881"],
+    ["a whole number", "200000000", "200000000", "2", "2"],
+    ["the smallest amount", "5", "5", "0.00000005", "0.00000005"],
+    ["a large one", "12345678901234567890", "1", "123456789012.3456789", "0.00000001"],
+    ["nothing still to pay", "135851881", "0", "1.35851881", "0"],
+  ])("counts %s without rounding", async (_label, price, shortfall, amount, missing) => {
+    const gateway = ledger(() =>
+      Response.json(order("awaiting_payment", { price: { e8s: price }, shortfallE8s: shortfall })),
+    );
+
+    const { payment } = await gateway.provisioning.begin("space-1", OWNER_KEY, signal, paid);
+
+    expect(payment).toMatchObject({ amount, shortfall: missing });
+  });
+
+  it.each(["converting", "provisioning"])(
+    "is being made once the payment is in (%s), and owes nothing",
+    async (state) => {
+      const gateway = ledger(() =>
+        Response.json(order(state, { paidE8s: "135851881", shortfallE8s: "0" })),
+      );
+
+      await expect(gateway.provisioning.begin("space-1", OWNER_KEY, signal, paid)).resolves.toEqual(
+        {
+          state: "pending",
+          destination: null,
+          error: null,
+          payment: null,
+        },
+      );
+    },
+  );
+
+  it("gives back the place once it is ready", async () => {
+    const gateway = ledger(() =>
+      Response.json(order("ready", { canisterId: CANISTER, shortfallE8s: "0" })),
+    );
+
+    await expect(gateway.provisioning.begin("space-1", OWNER_KEY, signal, paid)).resolves.toEqual({
+      state: "ready",
+      destination: CANISTER,
+      error: null,
+      payment: null,
+    });
+  });
+
+  it("does not hand over a ready order that names no canister", async () => {
+    const gateway = ledger(() => Response.json(order("ready", { canisterId: null })));
+
+    await unavailable(gateway.provisioning.begin("space-1", OWNER_KEY, signal, paid));
+  });
+
+  it("fails an order the gateway failed, with its reason for operators, and one that expired", async () => {
+    const failed = ledger(() =>
+      Response.json(order("failed", { error: "The minting canister refunded the payment" })),
+    );
+    await expect(
+      failed.provisioning.begin("space-1", OWNER_KEY, signal, paid),
+    ).resolves.toMatchObject({
+      state: "failed",
+      error: "The minting canister refunded the payment",
+      payment: null,
+    });
+
+    const expired = ledger(() => Response.json(order("expired")));
+    await expect(
+      expired.provisioning.begin("space-1", OWNER_KEY, signal, paid),
+    ).resolves.toMatchObject({
+      state: "failed",
+      payment: null,
+    });
+  });
+
+  it.each([
+    ["key_conflict", 409, "key_conflict"],
+    ["limit_reached", 429, "limit_reached"],
+    ["invalid_owner", 400, "invalid_owner"],
+    ["invalid_key", 400, "invalid_owner"],
+  ])("turns the gateway's %s into a refusal of its own", async (error, status, reason) => {
+    const gateway = ledger(() => Response.json({ error, message: "no" }, { status }));
+
+    await expect(
+      gateway.provisioning.begin("space-1", OWNER_KEY, signal, paid),
+    ).rejects.toMatchObject({
+      name: "RecordLedgerProvisionRefused",
+      reason,
+    });
+  });
+
+  it("takes a gateway that does not sell, a refused token and an answer it cannot read as the ledger being unavailable", async () => {
+    const notSelling = ledger(() =>
+      Response.json({ error: "orders_not_configured" }, { status: 404 }),
+    );
+    await unavailable(notSelling.provisioning.begin("space-1", OWNER_KEY, signal, paid));
+
+    const refusedToken = ledger(() => Response.json({ error: "unauthorized" }, { status: 401 }));
+    expect(
+      (await unavailable(refusedToken.provisioning.begin("k", OWNER_KEY, signal, paid))).reason,
+    ).toBe("credential");
+
+    for (const unreadable of [
+      order("awaiting_payment", { deposit: { accountId: "not-an-account" } }),
+      order("awaiting_payment", { price: { e8s: "1.5" } }),
+      order("awaiting_payment", { shortfallE8s: "-1" }),
+      order("on_fire"),
+      { state: "awaiting_payment" },
+    ]) {
+      await unavailable(
+        ledger(() => Response.json(unreadable)).provisioning.begin("k", OWNER_KEY, signal, paid),
+      );
+    }
+  });
+
+  it("refuses a key that is not an Ed25519 public key before calling the gateway, paid or not", async () => {
+    let called = 0;
+    const gateway = ledger(() => {
+      called += 1;
+      return Response.json(order("awaiting_payment"));
+    });
+
+    await expect(
+      gateway.provisioning.begin("space-1", "not-a-key", signal, paid),
+    ).rejects.toMatchObject({ reason: "invalid_owner" });
+    expect(called).toBe(0);
   });
 });

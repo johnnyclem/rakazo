@@ -64,6 +64,64 @@ const provisionState = z.object({
   canisterId: z.string().nullable(),
   error: z.string().nullable(),
 });
+/** What the gateway says of an order: where to pay, how much, and how far it has got. */
+const orderState = z.object({
+  state: z.enum(["awaiting_payment", "converting", "provisioning", "ready", "failed", "expired"]),
+  deposit: z.object({ accountId: z.string().regex(/^[0-9a-f]{64}$/) }),
+  price: z.object({ e8s: z.string().regex(/^\d+$/) }),
+  shortfallE8s: z.string().regex(/^\d+$/),
+  canisterId: z.string().nullable(),
+  error: z.string().nullable(),
+});
+/** What an order is paid in, and how many of its smallest unit make one. */
+const PAYMENT_ASSET = "ICP";
+const E8S = 100_000_000n;
+
+/** An amount in the smallest unit as the decimal number people read: `135851881` is `1.35851881`. */
+function tokens(smallest: string): string {
+  const whole = BigInt(smallest) / E8S;
+  const fraction = (BigInt(smallest) % E8S).toString().padStart(8, "0").replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : `${whole}`;
+}
+
+/** The gateway's answer about an order as the provider-neutral snapshot of a place being made. */
+function orderSnapshot(order: z.infer<typeof orderState>): RecordLedgerProvisionSnapshot {
+  const pending = { state: "pending", destination: null, error: null, payment: null } as const;
+  switch (order.state) {
+    case "awaiting_payment":
+      return {
+        ...pending,
+        payment: {
+          asset: PAYMENT_ASSET,
+          amount: tokens(order.price.e8s),
+          shortfall: tokens(order.shortfallE8s),
+          address: order.deposit.accountId,
+        },
+      };
+    case "converting":
+    case "provisioning":
+      return pending;
+    case "ready":
+      // A ready order names its canister; one that does not is not something to hand an owner.
+      if (!order.canisterId) throw new RecordLedgerUnavailable("unavailable");
+      return { state: "ready", destination: order.canisterId, error: null, payment: null };
+    case "failed":
+      return {
+        state: "failed",
+        destination: null,
+        error: order.error ?? "The order failed",
+        payment: null,
+      };
+    case "expired":
+      return {
+        state: "failed",
+        destination: null,
+        error: "The order expired unpaid",
+        payment: null,
+      };
+  }
+}
+
 const REFUSALS = {
   invalid_owner: "invalid_owner",
   invalid_key: "invalid_owner",
@@ -164,7 +222,16 @@ export class AgentVaultRecordLedger implements RecordLedgerProvider {
       if (!response.ok) throw refusal(response.status);
       return (body as { provisioning?: unknown } | undefined)?.provisioning === true;
     },
-    begin: async (key, ownerKey, signal): Promise<RecordLedgerProvisionSnapshot> => {
+    // ...and sell it, to an owner who pays in ICP, when it was started with a price.
+    sale: {
+      available: async (signal) => {
+        const { response, body } = await this.call("/v1/identity", { method: "GET" }, signal);
+        if (response.status === 404) return false;
+        if (!response.ok) throw refusal(response.status);
+        return (body as { orders?: unknown } | undefined)?.orders === true;
+      },
+    },
+    begin: async (key, ownerKey, signal, options): Promise<RecordLedgerProvisionSnapshot> => {
       if (!isEd25519PublicKey(ownerKey)) {
         throw new RecordLedgerProvisionRefused(
           "invalid_owner",
@@ -172,7 +239,7 @@ export class AgentVaultRecordLedger implements RecordLedgerProvider {
         );
       }
       const { response, body } = await this.call(
-        "/v1/canisters",
+        options?.paid ? "/v1/orders" : "/v1/canisters",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -180,6 +247,11 @@ export class AgentVaultRecordLedger implements RecordLedgerProvider {
         },
         signal,
       );
+      if (response.ok && options?.paid) {
+        const parsed = orderState.safeParse(body);
+        if (!parsed.success) throw new RecordLedgerUnavailable("unavailable");
+        return orderSnapshot(parsed.data);
+      }
       if (response.ok) {
         const parsed = provisionState.safeParse(body);
         if (!parsed.success) throw new RecordLedgerUnavailable("unavailable");
@@ -187,6 +259,7 @@ export class AgentVaultRecordLedger implements RecordLedgerProvider {
           state: parsed.data.state,
           destination: parsed.data.canisterId,
           error: parsed.data.error,
+          payment: null,
         };
       }
       const named = (body as { error?: unknown; message?: unknown } | undefined) ?? {};
