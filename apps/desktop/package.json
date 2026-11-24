@@ -81,12 +81,17 @@
       "entitlementsInherit": "assets/entitlements.mac.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Rakazo uses the microphone for dictation and voice calls with your bots.",
+        "NSPersonalVoiceUsageDescription": "Rakazo can read replies aloud in your Personal Voice.",
         "NSSpeechRecognitionUsageDescription": "Rakazo turns what you say into text for dictation and voice calls with your bots."
       },
       "extraResources": [
         {
           "from": "build/speech/rakazo-speech",
           "to": "speech/rakazo-speech"
+        },
+        {
+          "from": "build/voice/rakazo-voice",
+          "to": "voice/rakazo-voice"
         },
         {
           "from": "assets/es.lproj",

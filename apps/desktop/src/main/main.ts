@@ -71,6 +71,7 @@ import {
   reportDesktopError,
 } from "./system/monitoring.js";
 import { createSystemSpeech } from "./system/system-speech.js";
+import { registerSystemVoice } from "./system/system-voice.js";
 import {
   confirmRemoteComputerAccess,
   createComputerAccessHandler,
@@ -882,6 +883,8 @@ app.whenReady().then(async () => {
     );
     handleIpc("desktop.speech.stop", (event, session) => speech.stop(event, session));
     handleIpc("desktop.speech.abort", (event, session) => speech.abort(event, session));
+    const resources = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), "build");
+    registerSystemVoice(permissionTarget, resources);
   }
   handleIpc(
     "desktop.clipboard.write",

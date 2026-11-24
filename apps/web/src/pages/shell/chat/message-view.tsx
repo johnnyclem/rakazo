@@ -11,7 +11,7 @@ import type {
 } from "@rakazo/contracts";
 import type { ChildBotBlock, PeerExchange } from "@rakazo/core";
 import { isPeerReceiptBlocks, isToolActivityBlock, otherAuthor } from "@rakazo/core";
-import { BotAvatar, Button, cn, resolvePersonaColorDef } from "@rakazo/ui-web";
+import { BotAvatar, cn, resolvePersonaColorDef } from "@rakazo/ui-web";
 import { UserRound } from "lucide-react";
 import { memo, useCallback, useMemo } from "react";
 import { CollaborationMarker } from "../../../components/ai/CollaborationMarker";
@@ -21,6 +21,7 @@ import { AskCard } from "../../../components/messages/AskCard";
 import { CloudAgentCard } from "../../../components/messages/CloudAgentCard";
 import { McpAppCard } from "../../../components/messages/McpAppCard";
 import { OutgoingDraftCard } from "../../../components/messages/OutgoingDraftCard";
+import { ReadAloudButton } from "../../../components/messages/ReadAloudButton";
 import { SubagentCard } from "../../../components/messages/SubagentCard";
 import {
   LIVE_TOOL_STEP_WINDOW,
@@ -82,6 +83,8 @@ export const MessageView = memo(function MessageView({
   onAddRoutine,
   voiceReady,
   speaking,
+  paused = false,
+  pausable = false,
   callHoldsSpeaker,
   onSpeak,
   onOpenComputer,
@@ -132,6 +135,9 @@ export const MessageView = memo(function MessageView({
   onAddRoutine: (name: string, prompt: string) => void;
   voiceReady: boolean;
   speaking: boolean;
+  /** The reading is on hold, and the device's own voice, which can pause, does the reading. */
+  paused?: boolean;
+  pausable?: boolean;
   /** An active call owns the speaker, so new reads wait until it ends. */
   callHoldsSpeaker: boolean;
   onSpeak: (message: ThreadMessage) => void;
@@ -326,17 +332,14 @@ export const MessageView = memo(function MessageView({
                 return null;
               })}
               {!isLive && voiceReady && message.blocks.some((block) => block.kind === "text") ? (
-                <Button
-                  variant="text"
-                  size="xs"
-                  aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
+                <ReadAloudButton
+                  speaking={speaking}
+                  paused={paused}
+                  pausable={pausable}
                   // Stopping the speech in progress stays available; a call blocks new reads.
                   disabled={callHoldsSpeaker && !speaking}
                   onClick={speak}
-                  className="font-normal"
-                >
-                  {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
-                </Button>
+                />
               ) : null}
             </div>
           </div>
@@ -633,17 +636,15 @@ export const MessageView = memo(function MessageView({
                     </ChatMarkdown>
                   </div>
                   {voiceReady ? (
-                    <Button
-                      variant="text"
-                      size="xs"
-                      aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
+                    <ReadAloudButton
+                      speaking={speaking}
+                      paused={paused}
+                      pausable={pausable}
                       // Stopping the speech in progress stays available; a call blocks new reads.
                       disabled={callHoldsSpeaker && !speaking}
                       onClick={speak}
-                      className="mt-2 font-normal"
-                    >
-                      {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
-                    </Button>
+                      className="mt-2"
+                    />
                   ) : null}
                 </div>
                 {i === hoverAnchorIndex ? hoverActions : null}

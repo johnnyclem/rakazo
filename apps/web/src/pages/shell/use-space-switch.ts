@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { discardPrimedBootstrap, primeSpaceBootstrap } from "../../lib/bootstrap";
 import { initialBootstrapTarget } from "../../lib/bootstrap-target";
 import { getSnapshot as getCallSnapshot, isLeavingSession } from "../../lib/calls/call-session";
+import { systemVoice } from "../../lib/calls/system-voice";
 import { speaker } from "../../lib/calls/tts";
 import { queryClient, spaceSeedKey } from "../../lib/query/query";
 import { selectedSpaceId, selectSpace } from "../../lib/query/rpc";
@@ -100,6 +101,7 @@ export function useOpenSpaceChat({
         void leaveOrganization(userId ?? null, previousEffective, spaceId);
         // Playback belongs to the conversation being left.
         speaker.stop();
+        systemVoice.stop();
         navigate(destination());
         return "commit";
       };

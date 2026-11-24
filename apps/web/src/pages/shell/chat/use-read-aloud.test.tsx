@@ -23,6 +23,21 @@ vi.mock("../../../lib/calls/tts", () => ({
   speaker: speakerMock,
   voiceNotReadyText: () => NOT_READY,
 }));
+const deviceVoice = vi.hoisted(() => {
+  const state: { status: string; messageId?: string } = { status: "idle" };
+  return {
+    state,
+    speak: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    stop: vi.fn(),
+    subscribe: (listener: (snapshot: typeof state) => void) => {
+      listener(state);
+      return () => {};
+    },
+  };
+});
+vi.mock("../../../lib/calls/system-voice", () => ({ systemVoice: deviceVoice }));
 const toastError = vi.hoisted(() => vi.fn());
 const toastDismiss = vi.hoisted(() => vi.fn());
 vi.mock("@rakazo/ui-web", () => ({ toast: { error: toastError, dismiss: toastDismiss } }));
@@ -41,7 +56,12 @@ let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 let latest: ReturnType<typeof useReadAloud>;
 
-type ReadProps = { snapshot: ThreadSnapshot; callBotId?: string; openVoiceSettings?: () => void };
+type ReadProps = {
+  snapshot: ThreadSnapshot;
+  callBotId?: string;
+  providerVoiceReady?: boolean;
+  openVoiceSettings?: () => void;
+};
 
 function renderRead(props: ReadProps) {
   container = document.createElement("div");
@@ -50,13 +70,19 @@ function renderRead(props: ReadProps) {
   rerenderRead(props);
 }
 
-function rerenderRead({ snapshot, callBotId, openVoiceSettings = () => {} }: ReadProps) {
+function rerenderRead({
+  snapshot,
+  callBotId,
+  providerVoiceReady = true,
+  openVoiceSettings = () => {},
+}: ReadProps) {
   act(() => {
     root?.render(
       <ReadHarness
         active={speaking}
         snapshot={snapshot}
         callBotId={callBotId}
+        providerVoiceReady={providerVoiceReady}
         openVoiceSettings={openVoiceSettings}
       />,
     );
@@ -67,11 +93,13 @@ function ReadHarness({
   active,
   snapshot,
   callBotId,
+  providerVoiceReady,
   openVoiceSettings,
 }: {
   active: Bot;
   snapshot: ThreadSnapshot;
   callBotId?: string;
+  providerVoiceReady: boolean;
   openVoiceSettings: () => void;
 }) {
   latest = useReadAloud({
@@ -79,6 +107,7 @@ function ReadHarness({
     snapshot,
     callBotId,
     activeBotId: { current: active.id },
+    providerVoiceReady,
     openVoiceSettings,
   });
   return null;
@@ -90,6 +119,8 @@ afterEach(() => {
   root = null;
   container = null;
   vi.clearAllMocks();
+  deviceVoice.state.status = "idle";
+  deviceVoice.state.messageId = undefined;
 });
 
 it("does not auto-speak a reply while a call with another bot is active", () => {
@@ -117,13 +148,13 @@ it("auto-speaks a new reply when no call is active", () => {
 
 it("does not start a manual read while a call is active", () => {
   renderRead({ snapshot: snapshot([message("m1", "first reply")]), callBotId: "bot-a" });
-  act(() => latest.speakMessage(message("m2", "spoken words")));
+  act(() => latest.onSpeak(message("m2", "spoken words")));
   expect(speak).not.toHaveBeenCalled();
 });
 
 it("reads a message on request when no call is active", () => {
   renderRead({ snapshot: snapshot([message("m1", "first reply")]) });
-  act(() => latest.speakMessage(message("m2", "spoken words")));
+  act(() => latest.onSpeak(message("m2", "spoken words")));
   expect(speak).toHaveBeenCalledWith("spoken words", { botId: "bot-b", messageId: "m2" });
 });
 
@@ -133,7 +164,7 @@ it("offers Voice settings from the toast when a manual read finds no voice conne
   speak.mockResolvedValueOnce(NOT_READY as never);
   const openVoiceSettings = vi.fn();
   renderRead({ snapshot: snapshot([message("m1", "first reply")]), openVoiceSettings });
-  act(() => latest.speakMessage(message("m2", "spoken words")));
+  act(() => latest.onSpeak(message("m2", "spoken words")));
   await vi.waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
   const [text, options] = toastError.mock.calls[0] as [string, ToastOptions];
   expect(text).toBe(NOT_READY);
@@ -161,7 +192,7 @@ it("opens Voice settings through the latest callback when the toast is clicked a
   const stale = vi.fn();
   const latestCallback = vi.fn();
   renderRead({ snapshot: snapshot([message("m1", "first reply")]), openVoiceSettings: stale });
-  act(() => latest.speakMessage(message("m2", "spoken words")));
+  act(() => latest.onSpeak(message("m2", "spoken words")));
   await vi.waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
   rerenderRead({
     snapshot: snapshot([message("m1", "first reply")]),
@@ -176,7 +207,7 @@ it("opens Voice settings through the latest callback when the toast is clicked a
 it("keeps other read-aloud failures as a plain toast", async () => {
   speak.mockResolvedValueOnce("Could not play that clip." as never);
   renderRead({ snapshot: snapshot([message("m1", "first reply")]), openVoiceSettings: vi.fn() });
-  act(() => latest.speakMessage(message("m2", "spoken words")));
+  act(() => latest.onSpeak(message("m2", "spoken words")));
   await vi.waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
   const [text, options] = toastError.mock.calls[0] as [string, ToastOptions];
   expect(text).toBe("Could not play that clip.");
@@ -189,4 +220,47 @@ it("dismisses its toast when the shell unmounts", () => {
   act(() => root?.unmount());
   root = null;
   expect(toastDismiss).toHaveBeenCalledWith("read-aloud-error");
+});
+
+it("reads a message in the device's voice when no voice provider is connected", () => {
+  renderRead({ snapshot: snapshot([message("m1", "first reply")]), providerVoiceReady: false });
+  act(() => latest.onSpeak(message("m2", "spoken words")));
+  expect(deviceVoice.speak).toHaveBeenCalledWith("spoken words", "m2");
+  expect(speakerMock.stop).toHaveBeenCalled();
+  expect(speak).not.toHaveBeenCalled();
+});
+
+it("prefers a connected voice provider over the device's voice", () => {
+  renderRead({ snapshot: snapshot([message("m1", "first reply")]) });
+  act(() => latest.onSpeak(message("m2", "spoken words")));
+  expect(speak).toHaveBeenCalledWith("spoken words", { botId: "bot-b", messageId: "m2" });
+  expect(deviceVoice.speak).not.toHaveBeenCalled();
+  // The provider's own voice takes over from a device reading.
+  expect(deviceVoice.stop).toHaveBeenCalled();
+});
+
+it("pauses the message the device is reading, resumes it, and reads another", () => {
+  deviceVoice.state.status = "speaking";
+  deviceVoice.state.messageId = "m2";
+  renderRead({ snapshot: snapshot([message("m1", "first reply")]), providerVoiceReady: false });
+  expect(latest.speakingMessageId).toBe("m2");
+  expect(latest.readerState).toEqual({ paused: false, pausable: true });
+  act(() => latest.onSpeak(message("m2", "spoken words")));
+  expect(deviceVoice.pause).toHaveBeenCalledOnce();
+
+  deviceVoice.state.status = "paused";
+  rerenderRead({ snapshot: snapshot([message("m1", "first reply")]), providerVoiceReady: false });
+  expect(latest.readerState).toEqual({ paused: true, pausable: true });
+  act(() => latest.onSpeak(message("m2", "spoken words")));
+  expect(deviceVoice.resume).toHaveBeenCalledOnce();
+
+  act(() => latest.onSpeak(message("m3", "other words")));
+  expect(deviceVoice.speak).toHaveBeenCalledWith("other words", "m3");
+});
+
+it("stops a device reading when a call starts", () => {
+  renderRead({ snapshot: snapshot([message("m1", "first reply")]) });
+  deviceVoice.stop.mockClear();
+  rerenderRead({ snapshot: snapshot([message("m1", "first reply")]), callBotId: "bot-a" });
+  expect(deviceVoice.stop).toHaveBeenCalledOnce();
 });

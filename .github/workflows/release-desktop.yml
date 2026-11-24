@@ -282,6 +282,10 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.device.audio-input" "$entitlements")" = true
           rm -f "$entitlements"
           "$speech" xx < /dev/null | grep -Fq '"language-not-supported"'
+          # Reading aloud only plays audio, so it needs no entitlement; it must be universal and run.
+          voice="$app/Contents/Resources/voice/rakazo-voice"
+          lipo "$voice" -verify_arch x86_64 arm64
+          "$voice" < /dev/null | grep -Fq '"language-not-supported"'
           ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/Rakazo" -e '
             const { createRequire } = require("node:module");
             const appRequire = createRequire(`${process.argv[1]}/Contents/Resources/app.asar/package.json`);

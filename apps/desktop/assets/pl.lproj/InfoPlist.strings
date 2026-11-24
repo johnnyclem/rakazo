@@ -1,2 +1,3 @@
 "NSMicrophoneUsageDescription" = "Rakazo używa mikrofonu do dyktowania i rozmów głosowych z Twoimi botami.";
 "NSSpeechRecognitionUsageDescription" = "Rakazo zamienia mowę na tekst podczas dyktowania i rozmów głosowych z Twoimi botami.";
+"NSPersonalVoiceUsageDescription" = "Rakazo może czytać odpowiedzi na głos Twoim Głosem osobistym.";

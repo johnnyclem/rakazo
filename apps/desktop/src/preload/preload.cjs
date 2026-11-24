@@ -71,6 +71,24 @@ contextBridge.exposeInMainWorld("rakazoDesktop", {
         },
       }
     : {}),
+  // Reading aloud uses the macOS voices through a helper; elsewhere the page uses the browser's own.
+  ...(process.platform === "darwin"
+    ? {
+        systemVoice: {
+          speak: (text, language, session) =>
+            ipcRenderer.invoke("desktop.systemVoice.speak", text, language, session),
+          pause: (session) => ipcRenderer.invoke("desktop.systemVoice.pause", session),
+          resume: (session) => ipcRenderer.invoke("desktop.systemVoice.resume", session),
+          stop: (session) => ipcRenderer.invoke("desktop.systemVoice.stop", session),
+          onEvent: (listener) => {
+            // The IpcRendererEvent stays in the preload: the renderer only sees the payload.
+            const handler = (_event, payload) => listener(payload);
+            ipcRenderer.on("desktop.systemVoice.event", handler);
+            return () => ipcRenderer.off("desktop.systemVoice.event", handler);
+          },
+        },
+      }
+    : {}),
   window: {
     close: () => ipcRenderer.invoke("desktop.window.close"),
     minimize: () => ipcRenderer.invoke("desktop.window.minimize"),

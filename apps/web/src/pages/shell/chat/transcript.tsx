@@ -114,6 +114,7 @@ export const Transcript = memo(function Transcript({
   onAddRoutine,
   voiceReady,
   speakingMessageId,
+  readerState,
   callHoldsSpeaker,
   onSpeak,
   onOpenComputer,
@@ -170,6 +171,8 @@ export const Transcript = memo(function Transcript({
   onAddRoutine: (name: string, prompt: string) => void;
   voiceReady: boolean;
   speakingMessageId: string | null;
+  /** How the reading under way is going; absent where nothing can pause. */
+  readerState?: { paused: boolean; pausable: boolean };
   callHoldsSpeaker: boolean;
   onSpeak: (message: ThreadMessage) => void;
   onOpenComputer: (botId?: string, takeControl?: boolean) => void;
@@ -807,6 +810,8 @@ export const Transcript = memo(function Transcript({
                         onAddRoutine={onAddRoutine}
                         voiceReady={voiceReady}
                         speaking={speakingMessageId === message.id}
+                        paused={speakingMessageId === message.id && readerState?.paused}
+                        pausable={speakingMessageId === message.id && readerState?.pausable}
                         callHoldsSpeaker={callHoldsSpeaker}
                         onSpeak={onSpeak}
                         onOpenComputer={onOpenComputer}

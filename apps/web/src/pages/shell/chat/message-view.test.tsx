@@ -334,8 +334,8 @@ it("names the person a reply quotes instead of saying You", () => {
 it("speaks the message it renders", () => {
   const onSpeak = vi.fn();
   renderView("bot", [{ kind: "text", text: "Hello" }], { onSpeak, voiceReady: true });
-  const button = [...container.querySelectorAll("button")].find(
-    (node) => node.textContent === "Speak",
+  const button = container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Speak this reply"]',
   );
   act(() => button?.click());
   expect(onSpeak).toHaveBeenCalledTimes(1);
@@ -363,6 +363,31 @@ it("disables starting a read while a call holds the speaker, keeping stop availa
   ];
   expect(stopButtons().length).toBeGreaterThan(0);
   for (const button of stopButtons()) expect(button.disabled).toBe(false);
+});
+
+it("pauses the device's voice while it reads, and resumes it from pause", () => {
+  const onSpeak = vi.fn();
+  renderView("bot", [{ kind: "text", text: "Hello" }], {
+    onSpeak,
+    voiceReady: true,
+    speaking: true,
+    pausable: true,
+  });
+  const pause = container.querySelector<HTMLButtonElement>('button[aria-label="Pause speaking"]');
+  act(() => pause?.click());
+  expect(onSpeak).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('button[aria-label="Stop speaking"]')).toBeNull();
+
+  renderView("bot", [{ kind: "text", text: "Hello" }], {
+    onSpeak,
+    voiceReady: true,
+    speaking: true,
+    pausable: true,
+    paused: true,
+  });
+  const resume = container.querySelector<HTMLButtonElement>('button[aria-label="Resume speaking"]');
+  act(() => resume?.click());
+  expect(onSpeak).toHaveBeenCalledTimes(2);
 });
 
 it("opens one counted peer line without an inline reply toggle", () => {

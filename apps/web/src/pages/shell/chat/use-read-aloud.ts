@@ -4,6 +4,7 @@ import { speechFromBlocks } from "@rakazo/core";
 import { toast } from "@rakazo/ui-web";
 import type { RefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { systemVoice } from "../../../lib/calls/system-voice";
 import { speaker, voiceNotReadyText } from "../../../lib/calls/tts";
 
 const READ_ALOUD_TOAST = "read-aloud-error";
@@ -18,6 +19,7 @@ function readAloud(
   opts: { botId: string; messageId: string },
   openVoiceSettings: RefObject<() => void>,
 ) {
+  systemVoice.stop();
   void speaker.speak(text, opts).then((error) => {
     if (!error) return;
     toast.error(error, {
@@ -31,18 +33,20 @@ function readAloud(
   });
 }
 
-/** Reads bot replies aloud: on request, and automatically for bots that speak their replies. */
+/** Reads bot replies aloud, on request or automatically; without a voice provider the device's voice reads. */
 export function useReadAloud({
   active,
   snapshot,
   callBotId,
   activeBotId,
+  providerVoiceReady,
   openVoiceSettings,
 }: {
   active: Bot | undefined;
   snapshot: ThreadSnapshot | null;
   callBotId: string | undefined;
   activeBotId: RefObject<string | undefined>;
+  providerVoiceReady: boolean;
   openVoiceSettings: () => void;
 }) {
   const openVoiceSettingsRef = useRef(openVoiceSettings);
@@ -54,18 +58,27 @@ export function useReadAloud({
     },
     [],
   );
-  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [providerMessageId, setProviderMessageId] = useState<string | null>(null);
+  const [device, setDevice] = useState(systemVoice.state);
   const autoSpoken = useRef<string | null>(null);
   const autoSpokenBotId = useRef<string | null>(null);
 
   useEffect(() => {
     const unsubSpeech = speaker.subscribe((state) => {
-      setSpeakingMessageId(state.status === "idle" ? null : (state.messageId ?? null));
+      setProviderMessageId(state.status === "idle" ? null : (state.messageId ?? null));
     });
+    const unsubDevice = systemVoice.subscribe(setDevice);
     return () => {
       unsubSpeech();
+      unsubDevice();
     };
   }, []);
+  // An active call owns the speaker, so a reading on the device gives way to it.
+  useEffect(() => {
+    if (callBotId !== undefined) systemVoice.stop();
+  }, [callBotId]);
+  const speakingMessageId =
+    device.status === "idle" ? providerMessageId : (device.messageId ?? null);
 
   useEffect(() => {
     if (!active || !snapshot || snapshot.botId !== active.id) return;
@@ -97,19 +110,40 @@ export function useReadAloud({
 
   const speakingMessageIdRef = useRef(speakingMessageId);
   speakingMessageIdRef.current = speakingMessageId;
+  const deviceRef = useRef(device);
+  deviceRef.current = device;
+  const providerVoiceReadyRef = useRef(providerVoiceReady);
+  providerVoiceReadyRef.current = providerVoiceReady;
   const callBotIdRef = useRef(callBotId);
   callBotIdRef.current = callBotId;
   const speakMessage = useCallback((message: ThreadMessage) => {
     if (speakingMessageIdRef.current === message.id) {
-      speaker.stop();
+      const reading = deviceRef.current;
+      if (reading.status === "speaking") systemVoice.pause();
+      else if (reading.status === "paused") systemVoice.resume();
+      else speaker.stop();
       return;
     }
     // An active call owns the speaker; a manual read must not cut into it.
     if (callBotIdRef.current !== undefined) return;
     const text = speechFromBlocks(message.blocks);
-    const id = message.botId ?? activeBotId.current;
-    if (text && id) readAloud(text, { botId: id, messageId: message.id }, openVoiceSettingsRef);
+    if (!text) return;
+    if (providerVoiceReadyRef.current) {
+      const id = message.botId ?? activeBotId.current;
+      if (id) readAloud(text, { botId: id, messageId: message.id }, openVoiceSettingsRef);
+      return;
+    }
+    speaker.stop();
+    systemVoice.speak(text, message.id);
   }, []);
 
-  return { speakingMessageId, speakMessage, callHoldsSpeaker: callBotId !== undefined };
+  // The transcript's props: the provider's voice reads on request, and so can the device's own.
+  return {
+    voiceReady: providerVoiceReady || systemVoice.available,
+    speakingMessageId,
+    /** Only the device's own voice can pause. */
+    readerState: { paused: device.status === "paused", pausable: device.status !== "idle" },
+    callHoldsSpeaker: callBotId !== undefined,
+    onSpeak: speakMessage,
+  };
 }

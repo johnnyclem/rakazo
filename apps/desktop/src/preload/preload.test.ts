@@ -242,6 +242,42 @@ describe("desktop preload bridge", () => {
     unsubscribe();
     expect(off).toHaveBeenCalledWith("desktop.speech.event", expect.any(Function));
   });
+
+  it("bridges the macOS system voice without leaking the IPC event", async () => {
+    const listeners: Array<(event: unknown, payload: unknown) => void> = [];
+    const on = vi.fn((_channel: string, handler: (event: unknown, payload: unknown) => void) => {
+      listeners.push(handler);
+    });
+    const off = vi.fn();
+    const { invoke, exposeInMainWorld } = runPreload("preload.cjs", { on, off }, "darwin");
+    const [, bridge] = exposeInMainWorld.mock.calls[0] as [string, RakazoDesktop];
+    const voice = bridge.systemVoice!;
+
+    await voice.speak("Hello", "es-CL", 3);
+    await voice.pause(3);
+    await voice.resume(3);
+    await voice.stop(3);
+    expect(invoke.mock.calls).toEqual([
+      ["desktop.systemVoice.speak", "Hello", "es-CL", 3],
+      ["desktop.systemVoice.pause", 3],
+      ["desktop.systemVoice.resume", 3],
+      ["desktop.systemVoice.stop", 3],
+    ]);
+
+    const received: unknown[] = [];
+    const unsubscribe = voice.onEvent((event) => received.push(event));
+    expect(on).toHaveBeenCalledWith("desktop.systemVoice.event", expect.any(Function));
+    listeners[0]?.({ sender: "ipc-event" }, { session: 3, type: "end" });
+    expect(received).toEqual([{ session: 3, type: "end" }]);
+    unsubscribe();
+    expect(off).toHaveBeenCalledWith("desktop.systemVoice.event", expect.any(Function));
+  });
+
+  it("has no system voice off macOS", () => {
+    const { exposeInMainWorld } = runPreload("preload.cjs", {}, "win32");
+    const [, bridge] = exposeInMainWorld.mock.calls[0] as [string, RakazoDesktop];
+    expect(bridge.systemVoice).toBeUndefined();
+  });
 });
 
 describe("mouse side buttons", () => {

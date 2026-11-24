@@ -253,11 +253,12 @@ function SpaceShell() {
       roster: rosterSignals,
     },
   );
-  const { speakingMessageId, speakMessage, callHoldsSpeaker } = useReadAloud({
+  const readAloud = useReadAloud({
     active,
     snapshot,
     callBotId: call?.botId,
     activeBotId,
+    providerVoiceReady: Boolean(voiceStatus?.ready),
     openVoiceSettings: () => openSettings("voice"),
   });
   const read = useChatRead({ rpc, active, groupId, activeGroup, setBots, setGroups });
@@ -830,10 +831,7 @@ function SpaceShell() {
             onRefresh={refreshActiveThread}
             onBotChanged={refreshBots}
             onAddRoutine={addSkillRoutine}
-            voiceReady={Boolean(voiceStatus?.ready)}
-            speakingMessageId={speakingMessageId}
-            callHoldsSpeaker={callHoldsSpeaker}
-            onSpeak={speakMessage}
+            {...readAloud}
             onOpenComputer={computerControls.onOpenComputer}
             onReleaseComputer={computerControls.onReleaseComputer}
             onOpenImportSetup={openImportSetup}

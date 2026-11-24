@@ -67,6 +67,13 @@ export type RakazoDesktopSpeechEvent =
   | { session: number; type: "error"; error: string }
   | { session: number; type: "end" };
 
+/** What the system voice reports for one reading; `end` always comes last, even after an error. */
+export type RakazoDesktopVoiceEvent =
+  | { session: number; type: "speaking" }
+  | { session: number; type: "paused" }
+  | { session: number; type: "error"; error: string }
+  | { session: number; type: "end" };
+
 /** App menu items the page carries out; each matches a shortcut the page also handles itself. */
 export const DESKTOP_MENU_COMMANDS = [
   "new",
@@ -152,6 +159,16 @@ export interface RakazoDesktop {
     stop: (session: number) => Promise<void>;
     abort: (session: number) => Promise<void>;
     onEvent: (listener: (event: RakazoDesktopSpeechEvent) => void) => () => void;
+  };
+  /** Reads text in the user's Personal Voice, else a Siri voice, else the default. Absent off macOS. */
+  systemVoice?: {
+    /** Starts reading in `language`. False when refused; no events follow then. */
+    speak: (text: string, language: string, session: number) => Promise<boolean>;
+    pause: (session: number) => Promise<void>;
+    resume: (session: number) => Promise<void>;
+    /** Ends the reading; `end` still arrives. */
+    stop: (session: number) => Promise<void>;
+    onEvent: (listener: (event: RakazoDesktopVoiceEvent) => void) => () => void;
   };
   /**
    * The browser each MCP server signs in through. Every server gets its own
