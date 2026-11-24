@@ -15,7 +15,11 @@ type Anchor = {
   writer: string | null;
   destination: string | null;
   status: { streams: number; behind: number; error: "not_allowed" | "failed" | null } | null;
-  provision: { offered: boolean; state: "pending" | "ready" | "failed" | null };
+  provision: {
+    offered: boolean;
+    state: "pending" | "ready" | "failed" | null;
+    payment: { asset: string; amount: string; shortfall: string; address: string } | null;
+  };
 };
 type Keys = {
   keys: Array<{ recipient: string; label: string | null; createdAt: string }>;
@@ -27,10 +31,10 @@ const none: Anchor = {
   writer: WRITER,
   destination: null,
   status: null,
-  provision: { offered: false, state: null },
+  provision: { offered: false, state: null, payment: null },
 };
 /** A Space whose owner can have a place made for them. */
-const makeable: Anchor = { ...none, provision: { offered: true, state: null } };
+const makeable: Anchor = { ...none, provision: { offered: true, state: null, payment: null } };
 const named = (destination: string, status: Anchor["status"] = null): Anchor => ({
   ...none,
   destination,
@@ -193,7 +197,7 @@ beforeEach(() => {
     return anchor;
   });
   recordLedger.provision.mockImplementation(async () => {
-    anchor = { ...none, provision: { offered: false, state: "pending" } };
+    anchor = { ...none, provision: { offered: false, state: "pending", payment: null } };
     return anchor;
   });
   ownerIdentity.create.mockResolvedValue({
@@ -501,7 +505,7 @@ it("says so when a key cannot be made, and goes no further", async () => {
 
 it("shows a place being made even before the owner has a backup key, and nothing to press", async () => {
   keys = { keys: [], earlier: false };
-  anchor = { ...none, provision: { offered: false, state: "pending" } };
+  anchor = { ...none, provision: { offered: false, state: "pending", payment: null } };
   await render();
 
   await settled(() => expect(settings()?.textContent).toContain("Creating…"));
@@ -509,7 +513,7 @@ it("shows a place being made even before the owner has a backup key, and nothing
 });
 
 it("says a place could not be made, and still lets the owner set one themselves", async () => {
-  anchor = { ...none, provision: { offered: false, state: "failed" } };
+  anchor = { ...none, provision: { offered: false, state: "failed", payment: null } };
   await render();
 
   await settled(() => expect(settings()?.textContent).toContain("Couldn't create it"));
@@ -518,13 +522,69 @@ it("says a place could not be made, and still lets the owner set one themselves"
 });
 
 it("shows the place as any other once it is ready", async () => {
-  anchor = { ...none, provision: { offered: false, state: "pending" } };
+  anchor = { ...none, provision: { offered: false, state: "pending", payment: null } };
   await render();
   await settled(() => expect(settings()?.textContent).toContain("Creating…"));
 
-  anchor = { ...named(PLACE), provision: { offered: false, state: "ready" } };
+  anchor = { ...named(PLACE), provision: { offered: false, state: "ready", payment: null } };
   await act(async () => client.invalidateQueries());
 
   await settled(() => expect(settings()?.textContent).toContain(PLACE));
   expect(settings()?.textContent).not.toContain("Creating…");
+});
+
+const ADDRESS = "ab".repeat(32);
+const due = (shortfall: string): NonNullable<Anchor["provision"]["payment"]> => ({
+  asset: "TEST",
+  amount: "1.5",
+  shortfall,
+  address: ADDRESS,
+});
+
+it("says what to send and where when a place is bought and waiting for its payment", async () => {
+  anchor = { ...none, provision: { offered: false, state: "pending", payment: due("1.5") } };
+  await render();
+
+  await settled(() => expect(settings()?.textContent).toContain("Send 1.5 TEST"));
+  expect(settings()?.textContent).toContain(ADDRESS);
+  expect(settings()?.textContent).toContain("Waiting for payment");
+  expect(settings()?.textContent).not.toContain("Creating…");
+  expect(settings()?.textContent).not.toContain("more");
+  // Nothing to press but the copy: the owner pays from their own wallet.
+  expect(hasButton("Create")).toBe(false);
+  expect(hasButton("Set")).toBe(false);
+});
+
+it("copies the address to pay", async () => {
+  anchor = { ...none, provision: { offered: false, state: "pending", payment: due("1.5") } };
+  await render();
+  await settled(() => expect(settings()?.textContent).toContain(ADDRESS));
+
+  await click("Copy ID");
+
+  expect(clipboard.copy).toHaveBeenCalledExactlyOnceWith(ADDRESS);
+});
+
+it("says how much more is needed once part of it has arrived", async () => {
+  anchor = { ...none, provision: { offered: false, state: "pending", payment: due("0.5") } };
+  await render();
+
+  await settled(() => expect(settings()?.textContent).toContain("Send 0.5 TEST more"));
+  expect(settings()?.textContent).not.toContain("Send 1.5 TEST");
+});
+
+it("goes on to creating the place once the payment is in, and shows it when it is ready", async () => {
+  anchor = { ...none, provision: { offered: false, state: "pending", payment: due("1.5") } };
+  await render();
+  await settled(() => expect(settings()?.textContent).toContain("Waiting for payment"));
+
+  anchor = { ...none, provision: { offered: false, state: "pending", payment: null } };
+  await act(async () => client.invalidateQueries());
+  await settled(() => expect(settings()?.textContent).toContain("Creating…"));
+  expect(settings()?.textContent).not.toContain("Waiting for payment");
+  expect(settings()?.textContent).not.toContain(ADDRESS);
+
+  anchor = { ...named(PLACE), provision: { offered: false, state: "ready", payment: null } };
+  await act(async () => client.invalidateQueries());
+  await settled(() => expect(settings()?.textContent).toContain(PLACE));
 });

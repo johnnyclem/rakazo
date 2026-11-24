@@ -60,11 +60,22 @@ export const RecordLedgerAnchorStatusSchema = z.object({
 /** How far making a place for a Space's owner has got. */
 export const RecordLedgerProvisionStateSchema = z.enum(["pending", "ready", "failed"]);
 
+/** What an owner still has to pay for their place, as the ledger states it. */
+export const RecordLedgerPaymentSchema = z.object({
+  asset: z.string(),
+  amount: z.string(),
+  shortfall: z.string(),
+  address: z.string(),
+});
+export type RecordLedgerPayment = z.infer<typeof RecordLedgerPaymentSchema>;
+
 export const RecordLedgerProvisionSchema = z.object({
-  /** Whether a place can be made for the owner now: the ledger can, the plan allows it, and the Space has none. */
+  /** Whether a place can be made for the owner now: the ledger can, the plan or a payment covers it, and the Space has none. */
   offered: z.boolean(),
   /** How a request for one has got to; null when none was made. */
   state: RecordLedgerProvisionStateSchema.nullable(),
+  /** What is still to be paid while the request waits for it; null when nothing is due. */
+  payment: RecordLedgerPaymentSchema.nullable(),
 });
 export type RecordLedgerProvision = z.infer<typeof RecordLedgerProvisionSchema>;
 

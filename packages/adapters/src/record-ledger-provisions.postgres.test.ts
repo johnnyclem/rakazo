@@ -237,7 +237,7 @@ describePostgres("making a place for a Space's owner (PostgreSQL)", () => {
       describeSpaceProvision(fixture.prisma, ledger, fixture.spaceId, planAllows);
 
     it("offers a place to an owner who has none, where the ledger and the plan allow it", async () => {
-      expect(await view()).toEqual({ offered: true, state: null });
+      expect(await view()).toEqual({ offered: true, state: null, payment: null });
     });
 
     it.each([
@@ -250,22 +250,22 @@ describePostgres("making a place for a Space's owner (PostgreSQL)", () => {
         },
       ],
     ])("offers nothing when %s", async (_label, ask) => {
-      expect(await ask()).toEqual({ offered: false, state: null });
+      expect(await ask()).toEqual({ offered: false, state: null, payment: null });
     });
 
     it("offers nothing once the Space names a place, or has asked for one, and says how it has got to", async () => {
       await start();
-      expect(await view()).toEqual({ offered: false, state: "pending" });
+      expect(await view()).toEqual({ offered: false, state: "pending", payment: null });
 
       ledger.completeProvisions();
       await sweep();
-      expect(await view()).toEqual({ offered: false, state: "ready" });
+      expect(await view()).toEqual({ offered: false, state: "ready", payment: null });
     });
 
     it("offers nothing to a Space that already names a place of its own", async () => {
       await setSpaceDestination(fixture.prisma, ledger, fixture.spaceId, "place-mine");
 
-      expect(await view()).toEqual({ offered: false, state: null });
+      expect(await view()).toEqual({ offered: false, state: null, payment: null });
     });
 
     it("does not ask the ledger whether it can when nothing else would offer one", async () => {
@@ -274,6 +274,120 @@ describePostgres("making a place for a Space's owner (PostgreSQL)", () => {
       await view(false);
 
       expect(probe).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("paying for a place", () => {
+    const key = () => `space-${fixture.spaceId}`;
+    const view = (planAllows = false) =>
+      describeSpaceProvision(fixture.prisma, ledger, fixture.spaceId, planAllows);
+    const due = (shortfall: string) => ({
+      asset: "TEST",
+      amount: "1.5",
+      shortfall,
+      address: `pay-${key()}`,
+    });
+
+    beforeEach(() => {
+      ledger.canSell = true;
+    });
+
+    it("offers a place for sale to a Space whose plan does not cover one, where the ledger sells", async () => {
+      expect(await view()).toEqual({ offered: true, state: null, payment: null });
+
+      ledger.canSell = false;
+      expect(await view()).toEqual({ offered: false, state: null, payment: null });
+    });
+
+    it("opens a request that is paid for, and keeps what is due for the owner to see", async () => {
+      await start(OWNER_KEY, false);
+
+      expect(await row()).toMatchObject({ paid: true, state: "pending", payment: due("1.5") });
+      expect(ledger.provisions.get(key())).toMatchObject({ paid: true });
+      expect(await view()).toEqual({ offered: false, state: "pending", payment: due("1.5") });
+      expect(changed).toEqual([fixture.spaceId]);
+    });
+
+    it("does not make the place while it is unpaid, however often it is looked at", async () => {
+      await start(OWNER_KEY, false);
+
+      ledger.completeProvisions();
+      await sweep();
+      await sweep();
+
+      expect(await row()).toMatchObject({ state: "pending", destination: null });
+      expect(await named()).toBeNull();
+    });
+
+    it("follows the payment as it arrives, tells the screen each time, and makes the place once it is in", async () => {
+      await start(OWNER_KEY, false);
+      changed.length = 0;
+
+      await sweep();
+      expect(changed).toEqual([]);
+
+      ledger.pay(key(), 0.5);
+      await sweep();
+      expect(await row()).toMatchObject({ state: "pending", payment: due("1") });
+      expect(changed).toEqual([fixture.spaceId]);
+
+      ledger.pay(key(), 1);
+      await sweep();
+      expect(await row()).toMatchObject({ state: "pending", payment: null });
+      expect(changed).toHaveLength(2);
+
+      ledger.completeProvisions();
+      await sweep();
+      expect(await row()).toMatchObject({ state: "ready", payment: null });
+      expect(await named()).toMatch(/^place-/);
+      expect(changed).toHaveLength(3);
+    });
+
+    it("makes the place with nothing to pay when the plan covers it, even where the ledger sells", async () => {
+      await start(OWNER_KEY, true);
+
+      expect(await row()).toMatchObject({ paid: false, payment: null });
+      expect(ledger.provisions.get(key())).toMatchObject({ paid: false });
+    });
+
+    it("keeps a place a paid plan's alone where the ledger does not sell", async () => {
+      ledger.canSell = false;
+
+      await expect(start(OWNER_KEY, false)).rejects.toBeInstanceOf(ProvisionPlanRequiredError);
+
+      expect(await row()).toBeNull();
+      expect(ledger.provisionCalls).toEqual([]);
+    });
+
+    it("keeps the request when the ledger cannot be reached, and finds what is due once it can", async () => {
+      ledger.unavailable = true;
+      await start(OWNER_KEY, false);
+      expect(await row()).toMatchObject({ paid: true, state: "pending", payment: null });
+
+      ledger.unavailable = false;
+      await sweep();
+
+      expect(await row()).toMatchObject({ payment: due("1.5") });
+    });
+
+    it("shows nothing due, rather than failing, when what is stored cannot be read", async () => {
+      await start(OWNER_KEY, false);
+      await fixture.prisma.recordLedgerProvision.update({
+        where: { spaceId: fixture.spaceId },
+        data: { payment: { nonsense: true } },
+      });
+
+      expect(await view()).toEqual({ offered: false, state: "pending", payment: null });
+    });
+
+    it("asks the ledger whether it sells only for a Space the plan does not cover", async () => {
+      const sale = vi.spyOn(ledger.provisioning.sale!, "available");
+
+      await view(true);
+      expect(sale).not.toHaveBeenCalled();
+
+      await view(false);
+      expect(sale).toHaveBeenCalledTimes(1);
     });
   });
 });

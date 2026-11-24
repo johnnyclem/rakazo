@@ -37,7 +37,13 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
   /** What each request for a place has asked for and how far it has got, by key. */
   readonly provisions = new Map<
     string,
-    { ownerKey: string; state: RecordLedgerProvisionSnapshot["state"]; destination: string | null }
+    {
+      ownerKey: string;
+      state: RecordLedgerProvisionSnapshot["state"];
+      destination: string | null;
+      /** The owner pays for it. */
+      paid: boolean;
+    }
   >();
   /** What `begin` was asked, in order, so a test can see a request was repeated rather than redone. */
   readonly provisionCalls: Array<{ key: string; ownerKey: string }> = [];
@@ -47,6 +53,12 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
   failProvisions = false;
   /** The most places it will make; refuses past it. */
   provisionLimit = Number.POSITIVE_INFINITY;
+  /** Whether it sells places to owners who pay; off, as a ledger that was not set up to. */
+  canSell = false;
+  /** What a place costs when it is sold. */
+  price = 1.5;
+  /** How much has been sent for each request that is paid for, by key. */
+  readonly sent = new Map<string, number>();
   /** Places that have not allowed the ledger to write yet. */
   readonly notAllowed = new Set<string>();
   /** How far each stream is kept at each place: `<destination>\n<stream>` to a count. */
@@ -89,10 +101,30 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
     },
   };
 
+  /** Sends `amount` toward a request that is paid for, as its owner would from their own wallet. */
+  pay(key: string, amount: number): void {
+    this.sent.set(key, (this.sent.get(key) ?? 0) + amount);
+  }
+
+  /** What is still to be paid for a request, or null when it is free or has been paid. */
+  private due(key: string): RecordLedgerProvisionSnapshot["payment"] {
+    const provision = this.provisions.get(key);
+    if (!provision?.paid) return null;
+    const missing = this.price - (this.sent.get(key) ?? 0);
+    if (missing <= 0) return null;
+    return {
+      asset: "TEST",
+      amount: String(this.price),
+      shortfall: String(missing),
+      address: `pay-${key}`,
+    };
+  }
+
   /** Finishes every request that is still being made, as the ledger would given a moment. */
   completeProvisions(): void {
     for (const [key, provision] of this.provisions) {
-      if (provision.state === "pending") {
+      // A request waiting for its payment is not being made yet.
+      if (provision.state === "pending" && !this.due(key)) {
         this.provisions.set(key, {
           ...provision,
           state: "ready",
@@ -109,10 +141,19 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
       if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
       return this.canProvision;
     },
-    begin: async (key, ownerKey, signal): Promise<RecordLedgerProvisionSnapshot> => {
+    sale: {
+      available: async (signal) => {
+        signal.throwIfAborted();
+        if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
+        return this.canSell;
+      },
+    },
+    begin: async (key, ownerKey, signal, options): Promise<RecordLedgerProvisionSnapshot> => {
       signal.throwIfAborted();
       if (this.unavailable) throw new RecordLedgerUnavailable("unavailable");
       this.provisionCalls.push({ key, ownerKey });
+      // A ledger that does not sell has no way to ask for payment.
+      if (options?.paid && !this.canSell) throw new RecordLedgerUnavailable("rejected");
       if (!/^[A-Za-z0-9_-]{43}$/.test(ownerKey)) {
         throw new RecordLedgerProvisionRefused("invalid_owner", "Not an Ed25519 public key");
       }
@@ -133,6 +174,7 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
           ownerKey,
           state: this.failProvisions ? "failed" : "pending",
           destination: null,
+          paid: options?.paid === true,
         });
       }
       const now = this.provisions.get(key)!;
@@ -140,6 +182,7 @@ export class RecordLedgerEmulator implements RecordLedgerProvider {
         state: now.state,
         destination: now.destination,
         error: now.state === "failed" ? "could not be made" : null,
+        payment: this.due(key),
       };
     },
   };

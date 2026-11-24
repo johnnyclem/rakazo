@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { RecordLedgerAnchor } from "@rakazo/contracts";
+import type { RecordLedgerAnchor, RecordLedgerPayment } from "@rakazo/contracts";
 import { MAX_ANCHOR_DESTINATION_LENGTH } from "@rakazo/contracts";
 import {
   Button,
@@ -42,6 +42,33 @@ function WriterId({ writer }: { writer: string }) {
         {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
       </Button>
     </div>
+  );
+}
+
+/** What an owner still has to send before their place is made, and where. */
+function PaymentDue({ payment }: { payment: RecordLedgerPayment }) {
+  const { amount, asset, shortfall, address } = payment;
+  return (
+    <SettingsRow
+      label={
+        shortfall === amount ? (
+          <Trans>
+            Send {amount} {asset}
+          </Trans>
+        ) : (
+          <Trans>
+            Send {shortfall} {asset} more
+          </Trans>
+        )
+      }
+    >
+      <div className="space-y-1 pt-2">
+        <WriterId writer={address} />
+        <p className="text-body-sm text-muted-foreground">
+          <Trans>Waiting for payment</Trans>
+        </p>
+      </div>
+    </SettingsRow>
   );
 }
 
@@ -178,14 +205,19 @@ export function BackupLocationSettings() {
       <SettingsGroup title={t`Backup location`}>
         {anchor.destination === null ? (
           provision.state === "pending" ? (
-            // Being made: nothing to do but wait, and the screen reads again when it is ready.
-            <SettingsRow
-              label={
-                <span className="text-muted-foreground">
-                  <Trans>Creating…</Trans>
-                </span>
-              }
-            />
+            provision.payment ? (
+              // Bought, and waiting for the owner's payment: the screen reads again as it arrives.
+              <PaymentDue payment={provision.payment} />
+            ) : (
+              // Being made: nothing to do but wait, and the screen reads again when it is ready.
+              <SettingsRow
+                label={
+                  <span className="text-muted-foreground">
+                    <Trans>Creating…</Trans>
+                  </span>
+                }
+              />
+            )
           ) : (
             <SettingsRow
               label={

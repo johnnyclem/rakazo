@@ -1,8 +1,10 @@
 import type { RecordLedgerProvider } from "@rakazo/adapter-kit";
 import { RecordLedgerProvisionRefused, RecordLedgerUnavailable } from "@rakazo/adapter-kit";
 import type { RecordLedgerProvision } from "@rakazo/contracts";
+import { RecordLedgerPaymentSchema } from "@rakazo/contracts";
 import { ClientError, deadlineSignal } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
+import { Prisma, readJsonColumn } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { DestinationInvalidError, setSpaceDestination } from "./record-ledger-destinations.js";
 
@@ -63,9 +65,30 @@ export async function canProvision(provider: RecordLedgerProvider): Promise<bool
   return (await probe(provider)) === "yes";
 }
 
+/** Whether the ledger sells places to owners who pay: yes, no, or unknown while it cannot be reached. */
+async function sells(provider: RecordLedgerProvider): Promise<"yes" | "no" | "unknown"> {
+  const sale = provider.provisioning?.sale;
+  if (!sale) return "no";
+  try {
+    return (await sale.available(deadlineSignal(CALL_TIMEOUT_MS))) ? "yes" : "no";
+  } catch (error) {
+    if (error instanceof RecordLedgerUnavailable) return "unknown";
+    throw error;
+  }
+}
+
+/** Whether an owner whose plan does not cover a place could buy one now. */
+async function canBuy(provider: RecordLedgerProvider): Promise<boolean> {
+  return (await sells(provider)) === "yes" && (await canProvision(provider));
+}
+
 /**
  * Asks the ledger to make a place for the owner who holds `ownerKey`, and keeps asking until it is
  * ready. Once it is, it becomes the Space's place. Repeating the same request changes nothing.
+ *
+ * A plan that covers it has the ledger make the place at the host's expense. Without one the owner
+ * pays, when the ledger sells places: the request then waits for the payment, which the ledger says
+ * how to make, before the place is made.
  */
 export async function startSpaceProvision(
   prisma: PrismaClient,
@@ -74,7 +97,8 @@ export async function startSpaceProvision(
   ownerKey: string,
   options: ProvisionHooks & { planAllows: boolean },
 ): Promise<void> {
-  if (!options.planAllows) throw new ProvisionPlanRequiredError();
+  const paid = !options.planAllows;
+  if (paid && (await sells(provider)) === "no") throw new ProvisionPlanRequiredError();
   // Only a definite no refuses: a ledger that is briefly unreachable keeps the request, which a
   // later pass finishes, rather than turn away someone who has just saved their key.
   if ((await probe(provider)) === "no") throw new ProvisionUnavailableError();
@@ -87,7 +111,7 @@ export async function startSpaceProvision(
   }
   if (!existing) {
     if (named) throw new ProvisionExistsError("This Space already names a place");
-    await prisma.recordLedgerProvision.create({ data: { spaceId, ownerKey } });
+    await prisma.recordLedgerProvision.create({ data: { spaceId, ownerKey, paid } });
   }
   // The owner is waiting, so try now; a ledger that cannot be reached is for the next pass to find.
   try {
@@ -127,13 +151,18 @@ export async function syncProvisions(
     take: BATCH,
   });
   for (const row of rows) {
-    let snapshot: { state: string; destination: string | null; error: string | null };
+    let snapshot: {
+      state: string;
+      destination: string | null;
+      error: string | null;
+      payment: RecordLedgerProvision["payment"];
+    };
     try {
-      snapshot = await provisioning.begin(
-        requestKey(row.spaceId),
-        row.ownerKey,
-        deadlineSignal(CALL_TIMEOUT_MS),
-      );
+      const key = requestKey(row.spaceId);
+      const signal = deadlineSignal(CALL_TIMEOUT_MS);
+      snapshot = row.paid
+        ? await provisioning.begin(key, row.ownerKey, signal, { paid: true })
+        : await provisioning.begin(key, row.ownerKey, signal);
     } catch (error) {
       if (!(error instanceof RecordLedgerProvisionRefused)) throw error;
       getLogger().warn("record.ledger.provision_refused", { "record.ledger.reason": error.reason });
@@ -151,11 +180,21 @@ export async function syncProvisions(
         state: ready ? "ready" : snapshot.state,
         destination: snapshot.destination,
         error: snapshot.error,
+        payment: snapshot.payment ?? Prisma.DbNull,
       },
     });
     if (ready) await bindDestination(prisma, provider, row.spaceId, snapshot.destination!);
-    if (snapshot.state !== row.state) options.onChanged?.(row.spaceId);
+    // An amount that moved is a change too: someone may be watching it come in.
+    if (snapshot.state !== row.state || !samePayment(row.payment, snapshot.payment)) {
+      options.onChanged?.(row.spaceId);
+    }
   }
+}
+
+/** Whether what is due now is what was recorded: the same amount still missing, at the same address. */
+function samePayment(recorded: unknown, now: RecordLedgerProvision["payment"]): boolean {
+  const before = RecordLedgerPaymentSchema.nullable().safeParse(recorded);
+  return before.success && JSON.stringify(before.data) === JSON.stringify(now ?? null);
 }
 
 /** Makes a ready place the Space's, unless its owner named one of their own in the meantime. */
@@ -196,11 +235,25 @@ export async function describeSpaceProvision(
   planAllows: boolean,
 ): Promise<RecordLedgerProvision> {
   const [row, named] = await Promise.all([
-    prisma.recordLedgerProvision.findUnique({ where: { spaceId }, select: { state: true } }),
+    prisma.recordLedgerProvision.findUnique({
+      where: { spaceId },
+      select: { state: true, payment: true },
+    }),
     prisma.recordLedgerDestination.findUnique({ where: { spaceId }, select: { spaceId: true } }),
   ]);
   const state = row ? (row.state as NonNullable<RecordLedgerProvision["state"]>) : null;
-  // Only ask the ledger when everything else says it would be offered.
-  const offered = !row && !named && planAllows && (await canProvision(provider));
-  return { offered, state };
+  // What is due is for showing, so one that cannot be read is shown as nothing due.
+  const payment = row
+    ? readJsonColumn(
+        RecordLedgerPaymentSchema.nullable(),
+        row.payment,
+        { table: "record_ledger_provisions", column: "payment", id: spaceId },
+        { fallback: null },
+      )
+    : null;
+  // Only ask the ledger when everything else says it would be offered. A plan that covers a place
+  // has the ledger make it; without one the owner can buy it, if the ledger sells.
+  const offered =
+    !row && !named && (planAllows ? await canProvision(provider) : await canBuy(provider));
+  return { offered, state, payment };
 }
