@@ -7,10 +7,10 @@ import type { Actor } from "@rakazo/contracts";
 import { MAX_OWNER_KEYS } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { procedureSecurityEvent } from "./auth/security-audit.js";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
 import { handleRpcError } from "./rpc-errors.js";
-import { procedureSecurityEvent } from "./security-audit.js";
 
 // Offline boundary: a fake Prisma holds the Space's members, owner keys and ledger entries, and
 // drives the real router handlers and the real owner-key service.

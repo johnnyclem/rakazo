@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { Button } from "@rakazo/ui-web";
-import { BackupKeyDialog, useNewBackupKey } from "../../components/BackupKeyDialog";
-import { errorText } from "../../lib/user-error";
+import { BackupKeyDialog, useNewBackupKey } from "../../components/spaces/BackupKeyDialog";
+import { errorText } from "../../lib/query/user-error";
 
 /**
  * The first step for a new account on a deployment that keeps a ledger of its backups. Nothing is
