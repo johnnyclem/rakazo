@@ -30,6 +30,8 @@ export interface MeetingMediaSession {
   /** Whether this deployment has enabled voice for the camera page. */
   voice: boolean;
   admitted: boolean;
+  /** A paused bot hears nothing. The page stays open, and the bridge answers 204 until resume. */
+  paused: boolean;
 }
 
 type ActiveSession = MeetingMediaSession & { sessionId: string; recentSpeech: string };
@@ -129,7 +131,7 @@ export function createMeetingMediaBridge(deps: {
         const session = await authenticate(c.req.raw);
         if (!session?.voice) return c.body(null, 401, NO_STORE);
         // A launch can connect its media before the admission event reaches the API.
-        if (!session.admitted) return c.body(null, 204, NO_STORE);
+        if (!session.admitted || session.paused) return c.body(null, 204, NO_STORE);
         if (c.req.header("content-type") !== "application/octet-stream") {
           return c.body(null, 415, NO_STORE);
         }
@@ -145,12 +147,14 @@ export function createMeetingMediaBridge(deps: {
           if (bytes.length < 2 || bytes.length % 2 !== 0) return c.body(null, 400, NO_STORE);
           signal.throwIfAborted();
           const current = await authenticate(c.req.raw);
+          if (current?.paused) return c.body(null, 204, NO_STORE);
           if (!current?.admitted || !current.voice) return c.body(null, 401, NO_STORE);
           const readiness = await deps.voiceReady(current, signal);
           if (readiness === "retry") return c.body(null, 204, NO_STORE);
           if (!readiness) return c.body(null, 403, NO_STORE);
           const verified = await authenticate(c.req.raw);
           signal.throwIfAborted();
+          if (verified?.paused) return c.body(null, 204, NO_STORE);
           if (
             !verified?.admitted ||
             !verified.voice ||
@@ -167,6 +171,7 @@ export function createMeetingMediaBridge(deps: {
           signal.throwIfAborted();
           const afterTurn = await authenticate(c.req.raw);
           signal.throwIfAborted();
+          if (afterTurn?.paused) return c.body(null, 204, NO_STORE);
           if (
             !afterTurn?.admitted ||
             !afterTurn.voice ||

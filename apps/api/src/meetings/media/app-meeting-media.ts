@@ -45,8 +45,7 @@ export async function loadMeetingMediaSession(
         status: { in: ["scheduled", "joining", "waiting", "joined"] },
         closedAt: null,
         expiresAt: { gt: new Date() },
-        // A paused bot answers nothing; its lease renewal fails here too.
-        bot: { archivedAt: null, pausedAt: null },
+        bot: { archivedAt: null },
         user: { deactivatedAt: null },
       },
       select: {
@@ -54,7 +53,7 @@ export async function loadMeetingMediaSession(
         userId: true,
         spaceId: true,
         botId: true,
-        bot: { select: { name: true } },
+        bot: { select: { name: true, pausedAt: true } },
         status: true,
       },
     });
@@ -77,6 +76,7 @@ export async function loadMeetingMediaSession(
     botId: session.botId,
     botName: session.bot.name,
     admitted: session.status === "joined",
+    paused: session.bot.pausedAt !== null,
     voice: deps.voice,
   };
 }

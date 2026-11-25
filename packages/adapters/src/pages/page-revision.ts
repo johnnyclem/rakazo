@@ -149,6 +149,7 @@ export function createPageRevisions(deps: Dependencies) {
           if (
             generate &&
             row.createdAt >= pageRevisionPendingCutoff() &&
+            !page.bot?.pausedAt &&
             (await pageRevisionAuthorized(prisma, row))
           ) {
             const source = await prisma.pageVersion.findUnique({
@@ -173,6 +174,7 @@ export function createPageRevisions(deps: Dependencies) {
                         if (
                           fresh?.status !== "pending" ||
                           fresh.createdAt < pageRevisionPendingCutoff() ||
+                          fresh.comment.page.bot?.pausedAt ||
                           !(await pageRevisionAuthorized(prisma, fresh))
                         )
                           return false;
@@ -204,7 +206,8 @@ export function createPageRevisions(deps: Dependencies) {
               select: requestSelect,
             });
             if (fresh?.status !== "pending") return;
-            const authorized = await pageRevisionAuthorized(tx, fresh);
+            const authorized =
+              !fresh.comment.page.bot?.pausedAt && (await pageRevisionAuthorized(tx, fresh));
             await tx.pageRevisionRequest.update({
               where: { id: requestId },
               data:

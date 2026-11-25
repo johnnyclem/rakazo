@@ -63,7 +63,7 @@ export function createMeetingMedia(
               signal,
               onRenew: async () => {
                 const current = await deps.loadSession(session.sessionId);
-                return Boolean(current?.admitted && current.voice);
+                return Boolean(current?.admitted && current.voice && !current.paused);
               },
             },
             async (lease) => {

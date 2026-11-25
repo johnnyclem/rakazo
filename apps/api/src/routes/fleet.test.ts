@@ -18,6 +18,9 @@ function client() {
       updateMany: vi.fn(async () => ({ count: 1 })),
       findMany: vi.fn(async () => [{ id: "run-1" }]),
     },
+    externalConversation: { findMany: vi.fn(async () => [{ id: "room-1" }]) },
+    meetingCalendarRule: { findMany: vi.fn(async () => [{ connectionId: "connection-1" }]) },
+    cloudAgent: { findMany: vi.fn(async () => [{ id: "agent-1" }]) },
     $transaction: (run: (tx: unknown) => unknown) => run(prisma),
   };
   const events = {
@@ -46,6 +49,18 @@ describe("fleet pause and resume", () => {
 
     expect(jobs.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({ name: "run.continue", payload: { runId: "run-1" } }),
+    );
+    expect(jobs.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "team_chat.ambient", payload: { conversationId: "room-1" } }),
+    );
+    expect(jobs.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "meeting.calendar-sync",
+        payload: { connectionId: "connection-1" },
+      }),
+    );
+    expect(jobs.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "cloud_agent.poll", payload: { agentId: "agent-1" } }),
     );
     expect(events.publishRosterChange).toHaveBeenCalledWith({ spaceIds: ["space-1"] });
     expect(events.publishSpaceChange).toHaveBeenCalledWith("space-1", "runs");

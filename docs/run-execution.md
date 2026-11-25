@@ -64,7 +64,8 @@ with no run under way still queues its follow-up, held like the rest.
 `fleet.resume` clears the pause, counts each held run's wait from that moment, and
 wakes each one once with `wakeRun`, keeping any wake time a run already had. It also
 asks for what nothing else would start again: the decision on each team-chat room's
-waiting ambient messages, and a sync of each calendar whose rules pick a resumed bot.
+waiting ambient messages, a sync of each calendar whose rules pick a resumed bot, and
+the poll of each of its cloud agents that is still waiting.
 Archiving a bot clears its pause. Duplicating a bot and exporting or importing an account do
 not carry it.
 
@@ -79,7 +80,12 @@ joining a meeting answer 409 with the code `bot_paused`. A calendar sync books n
 meeting for a paused bot and cancels the bookings it already made, and a join that was
 waiting to retry when the pause landed fails, and is not retried at the resume. A
 meeting the bot is already in stops answering participants while it is paused and
-answers again after the resume. A team-chat room's waiting ambient messages are neither
+answers again after the resume: the media page keeps its session and the bridge
+answers 204 to each turn, so the pause is never read as a revoked session. A cloud
+agent launch or follow-up queued before the pause is held, not sent, until the resume,
+while a cancel still goes out and a remote agent already launched keeps running. A bot's
+page revision request is refused with 409 and the code `bot_paused`, and one already
+waiting is cancelled, not run. A team-chat room's waiting ambient messages are neither
 judged nor ignored while the bot is paused: they wait for the resume. A paused bot's
 queued runs are left out of the activity list and of the live status card, and its status
 reads `paused`, or `pausing` while a run is still going.

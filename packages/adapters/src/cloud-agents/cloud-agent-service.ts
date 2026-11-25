@@ -221,7 +221,7 @@ export async function executeCloudAgentTool(
 
 /** The row is the outbox; queue failure leaves recoverable intent for the reconciler. */
 export async function enqueueCloudAgent(
-  deps: Pick<CloudAgentDeps, "jobs">,
+  deps: { jobs: Pick<JobPublisher, "enqueue"> },
   agentId: string,
   availableAt?: Date,
 ) {

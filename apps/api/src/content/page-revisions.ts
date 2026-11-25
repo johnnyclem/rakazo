@@ -124,6 +124,7 @@ export async function askPageRevision(
           "You've reached your daily revision limit for this page",
         );
     }
+    if (page.bot?.pausedAt) throw new ClientError("CONFLICT", "This bot is paused.", "bot_paused");
     const request = await tx.pageRevisionRequest.create({
       data: {
         commentId,

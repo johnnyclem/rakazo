@@ -55,11 +55,11 @@ describe.skipIf(!enabled)("which meeting session media may answer (PostgreSQL)",
       sessionId,
     );
 
-  it("answers a joined session and stops while its bot is paused", async () => {
-    expect(await load()).toMatchObject({ admitted: true, voice: true });
+  it("reports a paused bot as paused, not as a session that is gone", async () => {
+    expect(await load()).toMatchObject({ admitted: true, voice: true, paused: false });
     await system.bot.update({ where: { id: identity.botId }, data: { pausedAt: new Date() } });
-    expect(await load()).toBeNull();
+    expect(await load()).toMatchObject({ admitted: true, paused: true });
     await system.bot.update({ where: { id: identity.botId }, data: { pausedAt: null } });
-    expect(await load()).toMatchObject({ admitted: true });
+    expect(await load()).toMatchObject({ admitted: true, paused: false });
   });
 });

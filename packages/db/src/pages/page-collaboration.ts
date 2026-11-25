@@ -64,7 +64,7 @@ export const verifiedPageAccount = { ...activePageAccount, emailVerified: true }
 
 export const pageRevisionBotSelect = {
   user: { select: { deactivatedAt: true } },
-  bot: { select: { id: true, spaceId: true, archivedAt: true } },
+  bot: { select: { id: true, spaceId: true, archivedAt: true, pausedAt: true } },
 } satisfies Prisma.PageSelect;
 
 export async function canPageRequestRevision(

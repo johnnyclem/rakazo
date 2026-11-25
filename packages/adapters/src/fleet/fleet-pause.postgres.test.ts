@@ -84,6 +84,7 @@ describePostgres("pausing and resuming bots (PostgreSQL)", () => {
   });
   beforeEach(async () => {
     jobs = [];
+    await system.cloudAgent.deleteMany({ where: { spaceId: identity.spaceId } });
     await system.run.deleteMany({ where: { spaceId: identity.spaceId } });
     await system.task.deleteMany({ where: { spaceId: identity.spaceId } });
     await system.chatGroup.deleteMany({ where: { spaceId: identity.spaceId } });
@@ -235,6 +236,34 @@ describePostgres("pausing and resuming bots (PostgreSQL)", () => {
         job.name === "meeting.calendar-sync" ? [job.payload.connectionId] : [],
       ),
     ).toEqual([picked.id]);
+  });
+
+  it("polls the cloud agents of a resumed bot that still await a poll", async () => {
+    const other = await newBot("Other");
+    const agent = (botId: string, nextPollAt: Date | null) =>
+      system.cloudAgent.create({
+        data: {
+          operationKey: randomUUID(),
+          providerKey: "test",
+          spaceId: identity.spaceId,
+          userId: identity.userId,
+          threadId: identity.threadId,
+          botId,
+          title: "Fix the build",
+          launchRequest: {},
+          nextPollAt,
+        },
+      });
+    const waiting = await agent(identity.botId, new Date());
+    await agent(identity.botId, null);
+    await agent(other, new Date());
+    await pause({ kind: "space" });
+
+    await resume({ kind: "bot", botId: identity.botId });
+
+    expect(
+      jobs.flatMap((job) => (job.name === "cloud_agent.poll" ? [job.payload.agentId] : [])),
+    ).toEqual([waiting.id]);
   });
 
   it("wakes nothing when no bot was paused", async () => {

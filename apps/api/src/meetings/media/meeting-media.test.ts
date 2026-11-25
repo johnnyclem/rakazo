@@ -89,6 +89,7 @@ function fixture(modelText: string) {
       botName: "Atlas",
       voice: true,
       admitted: true,
+      paused: false,
     }),
   });
   const app = new Hono();

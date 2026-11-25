@@ -166,6 +166,33 @@ describe("meeting media bridge", () => {
     expect(emulator.received).toHaveLength(1);
   });
 
+  it("hears nothing while its bot is paused, without ending the page's session", async () => {
+    const { emulator, turn } = fixture();
+    emulator.session.paused = true;
+    expect((await turn()).status).toBe(204);
+    expect(emulator.received).toHaveLength(0);
+    expect(emulator.readinessChecks).toBe(0);
+
+    emulator.session.paused = false;
+    expect((await turn()).status).toBe(200);
+    expect(emulator.received).toHaveLength(1);
+  });
+
+  it("drops a reply that a pause overtakes, and speaks again after the resume", async () => {
+    const { emulator, turn } = fixture();
+    const reply = deferred<void>();
+    emulator.beforeReply(() => reply.promise);
+    const pending = turn();
+    await expect.poll(() => emulator.received.length).toBe(1);
+    emulator.session.paused = true;
+    reply.resolve();
+    expect((await pending).status).toBe(204);
+
+    emulator.session.paused = false;
+    emulator.beforeReply(async () => undefined);
+    expect((await turn()).status).toBe(200);
+  });
+
   it("keeps the camera branded while blocking capture and paid turns when voice becomes unavailable", async () => {
     const { emulator, session, turn } = fixture();
     emulator.setVoiceAvailable(false);

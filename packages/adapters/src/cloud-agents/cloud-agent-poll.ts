@@ -87,6 +87,8 @@ async function reconcile(deps: CloudAgentDeps, agent: Polled, provider: CloudAge
         await finishPoll(deps, agent, {}, abandoned);
         return;
       }
+      // Resume queues the poll again; a launch is the one step that starts remote work.
+      if (bot?.pausedAt) return;
       // Write dispatch intent before I/O; a crash replays the same idempotent create.
       const marked = await fenced(deps, agent, { launchDispatched: true });
       if (!marked.count) return;
@@ -169,6 +171,7 @@ async function reconcile(deps: CloudAgentDeps, agent: Polled, provider: CloudAge
           followupDispatchedAt: null,
         });
       } else {
+        if (bot?.pausedAt) return;
         // The card stops polling once it finishes, so a run started since then, as by a person in
         // the provider, is newer than the run it knows. Recovery compares against the newest run
         // at send time, or it would take that run for this follow-up and drop the follow-up.

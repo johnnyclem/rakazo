@@ -711,6 +711,38 @@ describePages("pages", () => {
     });
   });
 
+  it("does not run a paused bot's model for a page revision", async () => {
+    const owner = await signup(app, `draft-paused-${stamp}@example.test`, "Author");
+    const { id: requesterId } = await me(app, owner);
+    const bot = await createBot(app, owner, "Paused bot");
+    await sendAndWait(app, owner, bot.id, {
+      text: `call save_page with ${JSON.stringify({ title: "Paused", source: page("Paused") })}`,
+    });
+    const { pageId } = (await lastResult(bot.id)) as { pageId: string };
+    const { id: commentId } = await rpc<{ id: string }>(app, owner, "pageReviews/comment", {
+      pageId,
+      submissionId: randomUUID(),
+      version: 1,
+      section: "Paused",
+      body: "Clarify the plan.",
+    });
+    const dispatched = revisionCalls.mock.calls.length;
+    await db().bot.update({ where: { id: bot.id }, data: { pausedAt: new Date() } });
+
+    const asked = await raw(app, owner, "pageReviews/askRevision", { pageId, commentId });
+    expect(asked.status).toBe(409);
+    expect(await asked.json()).toMatchObject({ json: { code: "bot_paused" } });
+    expect(await db().pageRevisionRequest.count({ where: { commentId } })).toBe(0);
+
+    const queued = await db().pageRevisionRequest.create({ data: { commentId, requesterId } });
+    await jobs.enqueue(pageRevisionJob(queued.id));
+    await vi.waitFor(async () => {
+      const row = await db().pageRevisionRequest.findUniqueOrThrow({ where: { id: queued.id } });
+      expect(row.status).toBe("cancelled");
+    });
+    expect(revisionCalls).toHaveBeenCalledTimes(dispatched);
+  });
+
   it("saves, edits and guards pages through the bot's save_page", async () => {
     const cookie = await signup(app, `pages-${stamp}@rakazo.test`, "Page Owner");
     const bot = await createBot(app, cookie, "Reporter");

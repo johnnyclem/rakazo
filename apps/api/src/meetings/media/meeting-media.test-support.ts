@@ -30,6 +30,7 @@ export function createMeetingMediaEmulator(publicOrigin: string) {
     botName: "Atlas",
     voice: true,
     admitted: true,
+    paused: false,
   };
   const received: Uint8Array[] = [];
   let revoked = false;
