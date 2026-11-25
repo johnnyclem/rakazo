@@ -234,6 +234,8 @@ export function createJobReconciler(
         : undefined;
       const runs = await deps.prisma.run.findMany({
         where: {
+          // A paused bot's runs are held; resuming wakes them.
+          bot: { pausedAt: null },
           AND: [
             {
               OR: [

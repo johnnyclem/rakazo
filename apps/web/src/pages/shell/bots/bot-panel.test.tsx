@@ -168,6 +168,7 @@ function bot(description = "Billing", overrides: Partial<Bot> = {}): Bot {
     pinned: false,
     sectionId: null,
     archivedAt: null,
+    pausedAt: null,
     unread: false,
     parentBotId: null,
     memoryScope: null,

@@ -90,6 +90,8 @@ export async function reconcileStuckWork(deps: {
           OR: STUCK_WORK_STATUSES.map((status) => ({
             status,
             updatedAt: { lte: new Date(deps.now.getTime() - stuckWorkDueAfterMs(status)) },
+            // A paused bot's queued run is held on purpose, not stuck.
+            ...(status === "queued" ? { bot: { pausedAt: null } } : {}),
           })),
         },
         ...(cursorFilter ? [cursorFilter] : []),

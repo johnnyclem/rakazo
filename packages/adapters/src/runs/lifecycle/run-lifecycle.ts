@@ -398,7 +398,7 @@ export async function requeueComputerRun(
 
 /**
  * Claims a due run for this worker under a new fence and marks it running. Undefined when the
- * run is not due, another worker holds it, or its Space takes no new work.
+ * run is not due, another worker holds it, its bot is paused, or its Space takes no new work.
  */
 export async function claimRun(
   deps: ExecutorDeps,
@@ -425,6 +425,8 @@ export async function claimRun(
       : tx.run.updateMany({
           where: {
             id: run.id,
+            // A paused bot starts nothing; the run stays queued until it is resumed.
+            bot: { pausedAt: null },
             ...continueRunClaimFence(run),
             AND: [
               { OR: [{ wakeAt: null }, { wakeAt: { lte: now } }] },

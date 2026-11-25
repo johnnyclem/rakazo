@@ -348,6 +348,7 @@ export class RunWorkerHost implements JobWorkerHost {
         FROM runs
         JOIN bots bot ON bot.id = runs."botId"
         WHERE runs.status = 'queued' AND runs.trigger NOT IN ('routine', 'reaction')
+          AND bot."pausedAt" IS NULL
           AND runs."updatedAt" <= ${cutoff}
           AND (runs."wakeAt" IS NULL OR runs."wakeAt" <= ${cutoff})
           AND NOT EXISTS (
@@ -424,6 +425,8 @@ export class RunWorkerHost implements JobWorkerHost {
     const batchSize = this.options.batchSize ?? 100;
     const rows = await this.prisma.run.findMany({
       where: {
+        // A paused bot's runs wait; resuming wakes them.
+        bot: { pausedAt: null },
         trigger:
           lane === "background"
             ? { in: ["routine", "reaction"] }

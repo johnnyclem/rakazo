@@ -34,6 +34,8 @@ export const ROSTER_PROCEDURES: Record<string, RosterScope> = {
   "bots.archive": actorSpace,
   "bots.restore": actorSpace,
   "bots.remove": actorSpace,
+  "fleet.pause": actorSpace,
+  "fleet.resume": actorSpace,
   "bots.rotateWebhookSecret": actorSpace,
   "onboarding.firstBot": actorSpace,
   "groups.create": actorSpace,

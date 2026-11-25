@@ -87,6 +87,7 @@ function mapBot(
     pinned: boolean;
     sectionId: string | null;
     archivedAt: Date | null;
+    pausedAt?: Date | null;
     parentBotId: string | null;
     memoryScope: string | null;
     createdAt: Date;
@@ -130,6 +131,7 @@ function mapBot(
     pinned: bot.pinned,
     sectionId: bot.sectionId,
     archivedAt: bot.archivedAt?.toISOString() ?? null,
+    pausedAt: bot.pausedAt?.toISOString() ?? null,
     unread: unreadFor(bot.thread),
     snoozedUntil: snoozedUntilFor(bot.thread),
     parentBotId: bot.parentBotId,

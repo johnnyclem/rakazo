@@ -105,6 +105,14 @@ export const AUDITED_PROCEDURES: Record<string, AuditedProcedure> = {
     kind: "spending_limit",
     fields: ["limit.currency", "limit.period"],
   },
+  "fleet.pause": {
+    type: "bot.pause.changed",
+    fields: ["scope.kind", "scope.botId", "scope.groupId"],
+  },
+  "fleet.resume": {
+    type: "bot.pause.changed",
+    fields: ["scope.kind", "scope.botId", "scope.groupId"],
+  },
   "spaceSettings.setOverride": {
     type: "approval.policy.changed",
     fields: ["setting", "enabled"],

@@ -9,6 +9,7 @@ import { billingRpc } from "../billing/billing-rpc.js";
 import { botsRpc } from "../bots/bots-rpc.js";
 import { serverRpc } from "../clients/server-rpc.js";
 import { computersRpc } from "../computers/computers-rpc.js";
+import { fleetRpc } from "../fleet/fleet-rpc.js";
 import { integrationsRpc } from "../integrations/integrations-rpc.js";
 import { meetingCalendarRpc } from "../meetings/calendar.js";
 import { meetingsRpc } from "../meetings/meetings.js";
@@ -35,6 +36,7 @@ export const appContract = {
   ...skillsRpc,
   ...integrationsRpc,
   ...runsRpc,
+  ...fleetRpc,
 };
 
 export type AppContract = typeof appContract;

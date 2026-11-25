@@ -340,6 +340,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["bots/update", { botId: "missing-bot", name: "Nope" }],
       ["bots/archive", { botId: "missing-bot" }],
       ["bots/restore", { botId: "missing-bot" }],
+      ["fleet/pause", { scope: { kind: "bot", botId: "missing-bot" } }],
+      ["fleet/resume", { scope: { kind: "bot", botId: "missing-bot" } }],
       ["bots/remove", { botId: "missing-bot" }],
       ["bots/removePreview", { botId: "missing-bot" }],
       ["bots/importCreate"],

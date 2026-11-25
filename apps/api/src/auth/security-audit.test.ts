@@ -85,6 +85,21 @@ describe("procedureSecurityEvent", () => {
     ).toMatchObject({ type: "approval.decided", metadata: { decision: "deny", kind: "mcp" } });
   });
 
+  it.each([["pause"], ["resume"]])("records which bots a %s covered", (procedure) => {
+    expect(
+      procedureSecurityEvent(
+        ["fleet", procedure],
+        { scope: { kind: "group", groupId: "group-1" } },
+        actor,
+      ),
+    ).toEqual({
+      type: "bot.pause.changed",
+      userId: "user-1",
+      spaceId: "space-1",
+      metadata: { procedure: `fleet.${procedure}`, kind: "group", groupId: "group-1" },
+    });
+  });
+
   it("ignores procedures that change nothing security-relevant", () => {
     expect(procedureSecurityEvent(["threads", "send"], { text: "hello" }, actor)).toBeUndefined();
   });

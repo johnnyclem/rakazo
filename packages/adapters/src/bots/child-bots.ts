@@ -366,7 +366,8 @@ export async function archiveBot(
     }
     await tx.bot.update({
       where: { id: bot.id },
-      data: { archivedAt: bot.archivedAt ?? now, pinned: false },
+      // Resume reaches live bots only, so an archived bot must not keep its pause.
+      data: { archivedAt: bot.archivedAt ?? now, pinned: false, pausedAt: null },
     });
     return cancelled;
   });

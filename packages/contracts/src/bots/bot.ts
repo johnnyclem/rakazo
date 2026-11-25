@@ -47,6 +47,8 @@ export const BotSchema = z.object({
   pinned: z.boolean(),
   sectionId: Id.nullable(),
   archivedAt: z.string().nullable(),
+  /** Set while the bot is paused: it starts no run until resumed. */
+  pausedAt: z.string().nullable().default(null),
   unread: z.boolean(),
   /** Hidden from the viewer's chat list until then; past, the chat has just woken. */
   snoozedUntil: z.string().nullable().optional(),

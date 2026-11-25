@@ -453,6 +453,7 @@ describePostgres("account import (PostgreSQL)", () => {
     const parent = bots.find((bot) => bot.name === "Chief")!;
     expect(bots).toHaveLength(2);
     expect(bots.every((bot) => bot.userId === userId && !bot.id.startsWith("src-"))).toBe(true);
+    expect(bots.every((bot) => bot.pausedAt === null)).toBe(true);
     expect(child.parentBotId).toBe(parent.id);
     expect(child.pinned).toBe(true);
     expect(child.fleetManagement).toBe(false);

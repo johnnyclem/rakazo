@@ -516,7 +516,7 @@ describe("reconcileStuckWork", () => {
           AND: [
             {
               OR: [
-                { status: "queued", updatedAt: { lte: age(4) } },
+                { status: "queued", updatedAt: { lte: age(4) }, bot: { pausedAt: null } },
                 { status: "waiting_takeover", updatedAt: { lte: age(0.5) } },
               ],
             },

@@ -18,6 +18,9 @@ const SPACE_CHANGE_PROCEDURES: Record<string, readonly SpaceChangeKind[]> = {
   "threads.endCall": ["runs"],
   "threads.followUp": ["runs"],
   "skills.testRun": ["runs"],
+  // Activity leaves out a paused bot's held runs, and a resume starts them.
+  "fleet.pause": ["runs"],
+  "fleet.resume": ["runs"],
   // Activity leaves out archived bots.
   "bots.restore": ["runs", "routines"],
   "bots.remove": ["runs", "routines"],

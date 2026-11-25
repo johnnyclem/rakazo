@@ -51,6 +51,8 @@ function busyRunWhere(
   return {
     id: { not: run.id },
     botId: run.botId,
+    // A paused bot's runs are held, not under way: counting them would keep rescheduling the wait.
+    bot: { pausedAt: null },
     status: { in: [...QUEUE_HOLDING_RUN_STATUSES] },
     ...HOLDS_CHAT,
     OR: [
@@ -138,6 +140,7 @@ export async function startRunsWaitingOnChat(
       id: { not: run.id },
       threadId: run.threadId,
       botId: run.botId,
+      bot: { pausedAt: null },
       trigger: { in: [...CHAT_WAITING_TRIGGERS] },
       status: "queued",
       startedAt: null,

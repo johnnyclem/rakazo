@@ -63,7 +63,10 @@ export async function findContinuableRun(
   if (deps.stoppingSignal?.aborted || deps.shutdownSignal?.aborted) return;
   const run = await deps.prisma.run.findUnique({
     where: { id: runId },
-    include: { routine: { select: { name: true, inChat: true } } },
+    include: {
+      routine: { select: { name: true, inChat: true } },
+      bot: { select: { pausedAt: true } },
+    },
   });
   if (!run) return;
   // Logs and security events raised by this run's tools name its account and space.
@@ -89,6 +92,11 @@ export async function findContinuableRun(
     if (await cancelDeactivatedAccountRuns(deps.prisma, deps.events, run.userId, runId)) return;
   }
   if (await cancelRunOfFormerMember(deps, run)) return;
+  // Cancelling above still applies to a paused bot's run; only starting it waits for the resume.
+  if (run.bot?.pausedAt) {
+    getLogger().info("run.held_paused", { "run.id": run.id, "bot.id": run.botId });
+    return;
+  }
   return run;
 }
 

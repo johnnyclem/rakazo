@@ -27,6 +27,7 @@ export const SECURITY_EVENT_TYPES = [
   "deployment.settings.changed",
   "approval.decided",
   "approval.policy.changed",
+  "bot.pause.changed",
   "bot_email.policy.changed",
   "space.invite.created",
   "space.invites.cancelled",

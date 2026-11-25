@@ -375,7 +375,7 @@ describe("spawned bot archival", () => {
     });
     expect(botUpdate).toHaveBeenCalledWith({
       where: { id: "self-1" },
-      data: { archivedAt: expect.any(Date), pinned: false },
+      data: { archivedAt: expect.any(Date), pinned: false, pausedAt: null },
     });
   });
 });
@@ -2603,7 +2603,7 @@ describe("archiveBot", () => {
     });
     expect(updateBot).toHaveBeenCalledWith({
       where: { id: "bot-1" },
-      data: { archivedAt: expect.any(Date), pinned: false },
+      data: { archivedAt: expect.any(Date), pinned: false, pausedAt: null },
     });
     expect(groupCleanup.$queryRaw).not.toHaveBeenCalled();
     expect(groupCleanup.chatGroup.deleteMany).not.toHaveBeenCalled();

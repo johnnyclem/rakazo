@@ -17,6 +17,7 @@ function bot(id = "bot-1"): Bot {
     runErrorId: null,
     sectionId: null,
     archivedAt: null,
+    pausedAt: null,
     unread: false,
     updatedAt: "2026-01-01T00:00:00.000Z",
     computerMode: "team",

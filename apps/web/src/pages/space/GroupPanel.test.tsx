@@ -88,6 +88,7 @@ function fakeBot(id: string, name: string): Bot {
     pinned: false,
     sectionId: null,
     archivedAt: null,
+    pausedAt: null,
     unread: false,
     parentBotId: null,
     memoryScope: null,

@@ -50,6 +50,22 @@ five-minute recheck backs that up. A scheduled task still waiting after five
 minutes hands its task to the working run instead. A message from another bot keeps
 waiting for a turn of its own, because its reply goes back to that bot.
 
+## Paused bots
+
+A person can pause a bot, a group's bots, or every bot in a Space (`fleet.pause`).
+`bots.pausedAt` is the only state. The run claim refuses a run whose bot is paused,
+so every way a run is created still creates it and none can start it: the row stays
+queued. The dispatch scan, the queue-delay report, the stuck-work reminder and
+cancel, the reconciliation pass and the chat-wait rechecks all skip a paused bot's
+queued runs, so a long pause adds no polling and no run is reminded about or
+cancelled for waiting. Stop still cancels held runs, and a message that arrives
+with no run under way still queues its follow-up, held like the rest.
+
+`fleet.resume` clears the pause, counts each held run's wait from that moment, and
+wakes each one once with `wakeRun`, keeping any wake time a run already had. Archiving
+a bot clears its pause. Duplicating a bot and exporting or importing an account do
+not carry it.
+
 Graphile remains responsible for scheduled and maintenance jobs. Those jobs can
 create runs, which use the same direct dispatch path. Legacy run deliveries remain
 supported during rolling upgrades and drain safely against the same database
