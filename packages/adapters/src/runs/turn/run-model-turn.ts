@@ -20,6 +20,7 @@ import {
   runReplyGuidance,
 } from "../assembly/run-replies.prompt.js";
 import type { RunExecutorServices, RunHold } from "../lifecycle/run-attempt.js";
+import { turnYieldSignal } from "../lifecycle/run-attempt.js";
 import { completeRun } from "../lifecycle/run-complete.js";
 import { failRun, handoffEndedTurn, requeueRunAfterDatabaseOutage } from "../lifecycle/run-fail.js";
 import { followUpsOffered, offeredFleetTools } from "../tools/run-tool-selection.js";
@@ -324,7 +325,7 @@ function modelTurnRequest(
     },
     resumeFromCheckpoint: takeoverResume?.checkpoint,
     turnCheckpoint,
-    yieldSignal: deps.stoppingSignal,
+    yieldSignal: turnYieldSignal(deps.stoppingSignal, hold.pause.signal),
     onCheckpoint: async (capture, executionId) => {
       effects.pendingTurnCheckpoints.set(executionId, capture);
     },

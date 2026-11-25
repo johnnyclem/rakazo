@@ -75,6 +75,18 @@ joining a meeting answer 409 with the code `bot_paused`. A paused bot's queued r
 are left out of the activity list, and its status reads `paused`, or `pausing` while a
 run is still going.
 
+A run already working when its bot is paused yields instead of being cut off. Each
+60-second lease heartbeat also reads `bots.pausedAt`; once it is set, the turn ends
+at its next step boundary, the same hand-back a stopping process uses: the turn is
+saved with its checkpoint, the run returns to `queued`, and the claim gate holds it.
+After the resume the next claim continues with the next model call, so no step repeats.
+Detection takes up to one heartbeat, and the turn then ends only after the step in
+progress. One long model stream or tool call is not interrupted, and a runtime that
+cannot yield finishes its turn before the gate stops the next one. A failed read of the
+pause is retried at the next heartbeat. Runs waiting for an answer or a takeover are
+left as they are, and the bot's computer keeps running: the yielded run gives up only its
+execution lease, as any requeued run does.
+
 Graphile remains responsible for scheduled and maintenance jobs. Those jobs can
 create runs, which use the same direct dispatch path. Legacy run deliveries remain
 supported during rolling upgrades and drain safely against the same database

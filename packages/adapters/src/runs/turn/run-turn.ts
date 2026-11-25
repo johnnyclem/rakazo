@@ -321,10 +321,10 @@ async function onSteered(ctx: RunContext, event: RuntimeEvent<"steered">) {
 }
 
 /**
- * The process is stopping and the turn finished a step: keep its narration, save the turn and
- * queue the run, so another process resumes with the next model call instead of repeating one.
- * Returns whether the turn ends here; when any part fails the turn goes on in this process, and
- * the shutdown path hands it back if it is still running at the drain limit.
+ * The process is stopping or the bot was paused and the turn finished a step: keep its narration,
+ * save the turn and queue the run, so the next claim resumes with the next model call instead of
+ * repeating one. Returns whether the turn ends here; when any part fails the turn goes on in this
+ * process, and the shutdown path hands it back if it is still running at the drain limit.
  */
 async function handBackBetweenSteps(ctx: RunContext, checkpoint: string): Promise<boolean> {
   const { deps, runId, workerId, fence } = ctx;

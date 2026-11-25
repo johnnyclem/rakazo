@@ -307,8 +307,26 @@ export interface RunHold extends RunClaim {
   takeover: TakeoverContinuePlan;
   /** Empty until assembly opens the run's abort signal; a lost lease aborts whatever is there. */
   abort: { controller: AbortController | null };
+  /** Aborts when a heartbeat finds the bot paused; the turn then ends at its next step. */
+  pause: AbortController;
   detachShutdown: (() => void) | undefined;
   dispatchHandedOff: boolean;
+}
+
+async function readBotPaused(deps: ExecutorDeps, botId: string): Promise<boolean> {
+  const bot = await deps.prisma.bot.findUnique({
+    where: { id: botId },
+    select: { pausedAt: true },
+  });
+  return Boolean(bot?.pausedAt);
+}
+
+/** Aborts when the process is stopping or the bot is paused: either ends a turn at its next step. */
+export function turnYieldSignal(
+  stoppingSignal: AbortSignal | undefined,
+  pauseSignal: AbortSignal,
+): AbortSignal {
+  return stoppingSignal ? AbortSignal.any([stoppingSignal, pauseSignal]) : pauseSignal;
 }
 
 export function holdRun(baseDeps: ExecutorDeps, claim: RunClaim): RunHold {
@@ -334,11 +352,17 @@ export function holdRun(baseDeps: ExecutorDeps, claim: RunClaim): RunHold {
     screenRelease: undefined,
   };
   const abort: RunHold["abort"] = { controller: null };
+  const pause = new AbortController();
   const runningHelpers = new Map<string, RunningHelper>();
   const settleHelpers = () => settleRunningHelpers(deps, run, runningHelpers);
 
   const heartbeat = setInterval(() => {
     if (lease.completed) return;
+    if (!pause.signal.aborted) {
+      void bestEffort("run.pause_check", readBotPaused(deps, run.botId)).then((paused) => {
+        if (paused && !lease.completed) pause.abort();
+      });
+    }
     void Promise.all([
       renewRunLease(deps, runId, workerId, fence),
       renewComputerExecutionLease(deps.prisma, hold.computerLease),
@@ -383,6 +407,7 @@ export function holdRun(baseDeps: ExecutorDeps, claim: RunClaim): RunHold {
     stopHeartbeatAfterCompletion,
     secrets: runSecrets,
     abort,
+    pause,
     detachShutdown: undefined,
     dispatchHandedOff: false,
   };
