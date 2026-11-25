@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createAdapterContext } from "@rakazo/adapter-kit";
+import { createAdapterContext, MeetingJoinRejected } from "@rakazo/adapter-kit";
 import { createDb, createThreadEvents, runAsSystem, runAsTenant } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { MeetingEmulator } from "../providers/meeting/emulator/meeting-emulator.js";
@@ -164,6 +164,80 @@ describe.skipIf(!databaseUrl)("meeting transcript recovery in PostgreSQL", () =>
         expect((await service.transcript(actor, privateSession)).artifactAvailable).toBe(true);
       });
     } finally {
+      await jobs.close();
+      await pool.end();
+    }
+  });
+
+  it("fails a join that was waiting to retry when its bot was paused", async () => {
+    const { prisma, pool } = createDb(databaseUrl!);
+    const jobs = new GraphileJobPublisher(pool);
+    const provider = new MeetingEmulator();
+    const join = vi.spyOn(provider, "join").mockRejectedValue(new MeetingJoinRejected(60_000));
+    const service = new MeetingService({
+      prisma,
+      jobs,
+      provider,
+      events: createThreadEvents(prisma),
+    });
+    const organizationId = randomUUID();
+    const userId = randomUUID();
+    const spaceId = randomUUID();
+    const botId = randomUUID();
+    const actor = {
+      userId,
+      spaceId,
+      email: "paused@meeting.example.test",
+      isDeploymentOwner: false,
+    };
+    try {
+      await runAsSystem("seed paused meeting fixture", async () => {
+        const now = new Date();
+        await prisma.user.create({ data: { id: userId, email: actor.email, name: "Fixture" } });
+        await prisma.organization.create({
+          data: { id: organizationId, name: "Fixture", slug: organizationId, createdAt: now },
+        });
+        await prisma.space.create({ data: { id: spaceId, organizationId, name: "Fixture" } });
+        await prisma.member.create({
+          data: { id: randomUUID(), organizationId, userId, role: "owner", createdAt: now },
+        });
+        await prisma.spaceMember.create({
+          data: {
+            id: randomUUID(),
+            organizationId,
+            userId,
+            spaceId,
+            role: "owner",
+            createdAt: now,
+          },
+        });
+        await prisma.bot.create({
+          data: { id: botId, userId, spaceId, color: "ink", name: "Atlas" },
+        });
+      });
+      const sessionId = await runAsTenant(actor, async () => {
+        await service.join(actor, botId, "https://meet.google.com/abc-defg-hij");
+        const { meetings } = await service.list(actor, botId);
+        return meetings[0]!.id;
+      });
+      expect(join).toHaveBeenCalledTimes(1);
+      await runAsSystem("pause the bot", () =>
+        prisma.bot.update({ where: { id: botId }, data: { pausedAt: new Date() } }),
+      );
+
+      await service.work({ sessionId, action: "join" });
+
+      expect(join).toHaveBeenCalledTimes(1);
+      await expect(
+        runAsSystem("read the session", () =>
+          prisma.meetingSession.findUniqueOrThrow({ where: { id: sessionId } }),
+        ),
+      ).resolves.toMatchObject({ status: "failed" });
+    } finally {
+      await runAsSystem("clean paused meeting fixture", async () => {
+        await prisma.organization.deleteMany({ where: { id: organizationId } });
+        await prisma.user.deleteMany({ where: { id: userId } });
+      });
       await jobs.close();
       await pool.end();
     }

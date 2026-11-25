@@ -389,10 +389,11 @@ export class MeetingCalendarService {
             const bot = rule?.botId
               ? await prisma.bot.findFirst({
                   where: { id: rule.botId, spaceId: connection.spaceId, archivedAt: null },
-                  select: { id: true, name: true },
+                  select: { id: true, name: true, pausedAt: true },
                 })
               : null;
-            if (rule && bot && link && event.meetingUrl) {
+            // A paused bot books no meeting; the branch below removes a booking it had.
+            if (rule && bot && !bot.pausedAt && link && event.meetingUrl) {
               lease.signal.throwIfAborted();
               // A valid reservation that started during this pass can already be joining.
               if (event.startsAt <= this.now()) continue;

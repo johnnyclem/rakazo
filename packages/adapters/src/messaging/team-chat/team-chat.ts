@@ -375,10 +375,10 @@ export class TeamChat {
       if (!conversation) return;
       const now = new Date();
       const available = await this.available(conversation);
-      // An archived bot answers nothing more.
+      // An archived or paused bot judges and answers nothing; its waiting messages are ignored.
       const bot = available
         ? await this.deps.prisma.bot.findFirst({
-            where: { id: conversation.botId, archivedAt: null },
+            where: { id: conversation.botId, archivedAt: null, pausedAt: null },
             select: {
               id: true,
               spaceId: true,

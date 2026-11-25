@@ -105,7 +105,11 @@ function setup(
       teamChatRules: string | null;
       automatedSenderPolicies: unknown;
     }>;
-    bot?: Partial<{ teamChatAmbientEnabled: boolean; teamChatRules: string }>;
+    bot?: Partial<{
+      teamChatAmbientEnabled: boolean;
+      teamChatRules: string;
+      pausedAt: Date | null;
+    }>;
     /** null leaves the judge out, as when no model is configured for it. */
     judge?: ((input: TeamChatEngagementInput) => Promise<TeamChatEngagementDecision>) | null;
     isInstallationActive?: (installationId: string) => Promise<boolean>;
@@ -135,6 +139,7 @@ function setup(
     teamChatAmbientEnabled: true,
     teamChatRules: "Help with launches.",
     archivedAt: null,
+    pausedAt: null as Date | null,
     ...options.bot,
   };
   const externalMessages = new Map<string, ExternalMessageRow>();
@@ -813,6 +818,17 @@ describe("TeamChat.ambientJob", () => {
       expect(chat.runSends()).toEqual([]);
     },
   );
+
+  it("makes no judge call for a paused bot and ignores what it would have judged", async () => {
+    const chat = setup({ bot: { pausedAt: new Date() } });
+    const message = chat.ambient();
+
+    await chat.teamChat.ambientJob(chat.conversation.id);
+
+    expect(chat.decide).not.toHaveBeenCalled();
+    expect(chat.row(message.id)).toMatchObject({ status: "ignored" });
+    expect(chat.runSends()).toEqual([]);
+  });
 
   it("starts one run for the message the judge picks, with the rest as its context", async () => {
     const chat = setup({

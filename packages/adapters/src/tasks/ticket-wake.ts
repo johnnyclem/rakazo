@@ -24,8 +24,8 @@ export async function wakeTicketAssignee(
     const status = TicketStatusSchema.safeParse(ticket.status);
     if (!status.success || isTicketCompletedStatus(status.data)) return null;
     const bot = await tx.bot.findFirst({
-      // A paused bot starts no ticket work; the assignment stays on the board.
-      where: { id: input.botId, spaceId: input.spaceId, archivedAt: null, pausedAt: null },
+      // A paused bot's run waits queued: the claim gate holds it and the resume starts it.
+      where: { id: input.botId, spaceId: input.spaceId, archivedAt: null },
       select: { id: true, userId: true, thread: { select: { id: true } } },
     });
     if (!bot?.thread) return null;

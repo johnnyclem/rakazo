@@ -612,4 +612,110 @@ postgres("meeting calendar reconciliation (PostgreSQL)", () => {
       await pool.end();
     }
   });
+
+  it("books no meeting for a paused bot and removes the bookings it had", async () => {
+    const { prisma, pool } = createDb(process.env.DATABASE_URL!);
+    const org = randomUUID();
+    const spaceId = randomUUID();
+    const botId = randomUUID();
+    const owner = { spaceId, userId: randomUUID() };
+    const now = new Date("2026-11-18T10:00:00Z");
+    const emulator = new RecallCalendarEmulator(now);
+    const resolved = async () => {};
+    const jobs: JobPublisher = {
+      enqueue: vi.fn(resolved),
+      enqueueIn: vi.fn(resolved),
+      enqueueManyIn: vi.fn(resolved),
+      cancel: vi.fn(resolved),
+      cancelIn: vi.fn(resolved),
+      close: vi.fn(resolved),
+    };
+    const service = new MeetingCalendarService({
+      prisma,
+      provider: emulator.provider,
+      jobs,
+      webOrigin: "https://rakazo.example.test",
+      oauthStateKey: "offline-fixture-key",
+      enabled: (space) => space === spaceId,
+      buildJoin: (input: MeetingJoinRequest) => Promise.resolve(input),
+      publish: vi.fn(resolved),
+      now: () => now,
+    });
+    const setPaused = (pausedAt: Date | null) =>
+      runAsSystem("change the bot's pause", () =>
+        prisma.bot.update({ where: { id: botId }, data: { pausedAt } }),
+      );
+    try {
+      await runAsSystem("seed paused calendar fixture", async () => {
+        await prisma.organization.create({
+          data: { id: org, name: "Calendar test", slug: org, createdAt: now },
+        });
+        await prisma.space.create({
+          data: { id: spaceId, name: "Calendar test", organizationId: org },
+        });
+        await prisma.user.create({
+          data: {
+            id: owner.userId,
+            name: "Calendar fixture",
+            email: `${owner.userId}@rakazo.test`,
+          },
+        });
+        await prisma.member.create({
+          data: {
+            id: randomUUID(),
+            organizationId: org,
+            userId: owner.userId,
+            role: "member",
+            createdAt: now,
+          },
+        });
+        await prisma.spaceMember.create({
+          data: {
+            id: randomUUID(),
+            organizationId: org,
+            spaceId,
+            userId: owner.userId,
+            role: "member",
+            createdAt: now,
+          },
+        });
+        await prisma.bot.create({
+          data: { id: botId, spaceId, userId: owner.userId, name: "Atlas", color: "ink" },
+        });
+      });
+      const start = await runAsTenant(owner, () =>
+        service.authorization.begin(owner, "web", { botId }),
+      );
+      await service.authorization.completeFromBrowser(
+        owner.userId,
+        start.state,
+        new URL(start.authorizationUrl).searchParams.get("code")!,
+      );
+      const { events } = await runAsTenant(owner, () => service.upcoming(owner, botId));
+      const [booked, later] = [events[0]!, events[1]!];
+      await runAsTenant(owner, () => service.updateSelection(owner, botId, booked.id, "once"));
+      expect(emulator.scheduled(booked.id)).toBeTruthy();
+      const connection = await runAsTenant(owner, () =>
+        prisma.meetingCalendarConnection.findFirstOrThrow({ where: owner }),
+      );
+
+      await setPaused(new Date());
+      await service.sync(connection.id);
+      expect(emulator.scheduled(booked.id)).toBeUndefined();
+      await runAsTenant(owner, () => service.updateSelection(owner, botId, later.id, "once"));
+      expect(emulator.scheduled(later.id)).toBeUndefined();
+
+      await setPaused(null);
+      await service.sync(connection.id);
+      expect(emulator.scheduled(booked.id)).toBeTruthy();
+      expect(emulator.scheduled(later.id)).toBeTruthy();
+    } finally {
+      await runAsSystem("clean paused calendar fixture", async () => {
+        await prisma.meetingCalendarConnection.deleteMany({ where: { spaceId } });
+        await prisma.organization.deleteMany({ where: { id: org } });
+        await prisma.user.deleteMany({ where: { id: owner.userId } });
+      });
+      await pool.end();
+    }
+  });
 });

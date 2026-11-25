@@ -445,8 +445,9 @@ export class MeetingService {
       await this.observe(row.id, recovered);
       return;
     }
+    // A bot paused since the join was accepted does not join; the session fails.
     const bot = await prisma.bot.findFirst({
-      where: { id: row.botId, spaceId: row.spaceId, archivedAt: null },
+      where: { id: row.botId, spaceId: row.spaceId, archivedAt: null, pausedAt: null },
       select: { name: true },
     });
     if (!row.meetingUrl || !bot || !(await this.member(row))) {

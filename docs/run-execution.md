@@ -68,10 +68,14 @@ not carry it.
 
 Work a paused bot would start on its own is skipped or refused instead of held. A
 recurring or watching routine skips its occurrence and schedules the next, while a
-one-time routine becomes a held run. The daily check-in and ticket wake create no run.
+one-time routine becomes a held run, as does a ticket assigned to the bot. The daily
+check-in creates no run.
 `message_bot`, `handoff_to_bot` and a message to a connected agent answer "{name} is
 paused." and create nothing; `post_to_group` is unchanged. Picking up the bot's call and
-joining a meeting answer 409 with the code `bot_paused`. A paused bot's queued runs
+joining a meeting answer 409 with the code `bot_paused`. A calendar sync books no
+meeting for a paused bot and cancels the bookings it already made, and a join that was
+waiting to retry when the pause landed fails. A team-chat room's waiting ambient messages
+are ignored while the bot is paused, with no judge call. A paused bot's queued runs
 are left out of the activity list, and its status reads `paused`, or `pausing` while a
 run is still going.
 

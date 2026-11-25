@@ -300,7 +300,7 @@ describePostgres("what a paused bot refuses, skips or holds (PostgreSQL)", () =>
     expect(await sweep()).toBe(1);
   });
 
-  it("starts no ticket work for a paused assignee", async () => {
+  it("holds a ticket assigned to a paused bot and starts it on resume", async () => {
     const { spaceId } = identity;
     const board = await system.board.upsert({
       where: { spaceId },
@@ -317,18 +317,23 @@ describePostgres("what a paused bot refuses, skips or holds (PostgreSQL)", () =>
       },
     });
     await pauseTarget();
-    const wake = () =>
-      wakeTicketAssignee(
-        { prisma: system, jobs: deps.jobs as never, deploymentLabs: ["board"] },
-        { spaceId, ticketId: ticket.id, botId: target.id },
-      );
 
-    await wake();
-    expect(await runsOf(target.id)).toHaveLength(0);
+    await wakeTicketAssignee(
+      { prisma: system, jobs: deps.jobs as never, deploymentLabs: ["board"] },
+      { spaceId, ticketId: ticket.id, botId: target.id },
+    );
+    const [held] = await runsOf(target.id);
+    expect(held).toMatchObject({ trigger: "tickets", status: "queued" });
+    expect(await claimRun(deps, held!, "worker-1")).toBeUndefined();
 
-    await system.bot.update({ where: { id: target.id }, data: { pausedAt: null } });
-    await wake();
-    expect(await runsOf(target.id)).toHaveLength(1);
+    const actor = { userId: identity.userId, spaceId } as Actor;
+    await resumeBots({ prisma: system, jobs: deps.jobs as never }, actor, {
+      kind: "bot",
+      botId: target.id,
+    });
+
+    expect(await claimRun(deps, held!, "worker-1")).toMatchObject({ current: { id: held!.id } });
+    await system.run.deleteMany({ where: { botId: target.id } });
     await system.ticket.delete({ where: { id: ticket.id } });
   });
 
