@@ -340,6 +340,17 @@ async function handBackBetweenSteps(ctx: RunContext, checkpoint: string): Promis
       return true;
     })(),
   );
+  // Apart from the hand-back, so a failed signal cannot send a run that is queued back to work.
+  if (ended && ctx.state.lease.handedBack) {
+    const spaceId = ctx.run.spaceId;
+    await bestEffort(
+      "run.hand_back_signal",
+      Promise.all([
+        deps.events.publishSpaceChange?.(spaceId, "runs"),
+        deps.events.publishRosterChange?.({ spaceIds: [spaceId] }),
+      ]),
+    );
+  }
   return ended ?? false;
 }
 

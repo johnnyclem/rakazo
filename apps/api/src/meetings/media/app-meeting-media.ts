@@ -1,4 +1,5 @@
 import type { configuredMeetingMedia } from "@rakazo/adapters/meeting-media";
+import type { PrismaClient } from "@rakazo/db";
 import { memberHasModelAccess, runAsSystem, runAsTenant } from "@rakazo/db";
 import { createMeetingMedia, meetingVoiceReady } from "./meeting-media.js";
 
@@ -20,48 +21,62 @@ export function appMeetingMedia(
       (!deps.billingEnabled ||
         (await runAsTenant(actor, () => memberHasModelAccess(prisma, actor)))) &&
       (await meetingVoiceReady(deps, actor, botId, signal)),
-    loadSession: async (id) => {
-      const session = await runAsSystem("resolve signed meeting media", async () => {
-        const row = await prisma.meetingSession.findFirst({
-          where: {
-            id,
-            provider: providerId,
-            status: { in: ["scheduled", "joining", "waiting", "joined"] },
-            closedAt: null,
-            expiresAt: { gt: new Date() },
-            bot: { archivedAt: null },
-            user: { deactivatedAt: null },
-          },
-          select: {
-            user: { select: { email: true } },
-            userId: true,
-            spaceId: true,
-            botId: true,
-            bot: { select: { name: true } },
-            status: true,
-          },
-        });
-        if (!row || !enabled(row.spaceId)) return null;
-        const member = await prisma.spaceMember.findUnique({
-          where: { spaceId_userId: { spaceId: row.spaceId, userId: row.userId } },
-          select: { id: true },
-        });
-        return member ? row : null;
-      });
-      if (!session) return null;
-      const actor = {
-        spaceId: session.spaceId,
-        userId: session.userId,
-        email: session.user.email,
-        isDeploymentOwner: false,
-      };
-      return {
-        actor,
-        botId: session.botId,
-        botName: session.bot.name,
-        admitted: session.status === "joined",
-        voice: config.voice,
-      };
-    },
+    loadSession: (id) =>
+      loadMeetingMediaSession({ prisma, providerId, enabled, voice: config.voice }, id),
   });
+}
+
+/** The live session a signed media request names, or null when it must not be answered. */
+export async function loadMeetingMediaSession(
+  deps: {
+    prisma: PrismaClient;
+    providerId: string;
+    enabled: (spaceId: string) => boolean;
+    voice: boolean;
+  },
+  id: string,
+) {
+  const { prisma, providerId, enabled } = deps;
+  const session = await runAsSystem("resolve signed meeting media", async () => {
+    const row = await prisma.meetingSession.findFirst({
+      where: {
+        id,
+        provider: providerId,
+        status: { in: ["scheduled", "joining", "waiting", "joined"] },
+        closedAt: null,
+        expiresAt: { gt: new Date() },
+        // A paused bot answers nothing; its lease renewal fails here too.
+        bot: { archivedAt: null, pausedAt: null },
+        user: { deactivatedAt: null },
+      },
+      select: {
+        user: { select: { email: true } },
+        userId: true,
+        spaceId: true,
+        botId: true,
+        bot: { select: { name: true } },
+        status: true,
+      },
+    });
+    if (!row || !enabled(row.spaceId)) return null;
+    const member = await prisma.spaceMember.findUnique({
+      where: { spaceId_userId: { spaceId: row.spaceId, userId: row.userId } },
+      select: { id: true },
+    });
+    return member ? row : null;
+  });
+  if (!session) return null;
+  const actor = {
+    spaceId: session.spaceId,
+    userId: session.userId,
+    email: session.user.email,
+    isDeploymentOwner: false,
+  };
+  return {
+    actor,
+    botId: session.botId,
+    botName: session.bot.name,
+    admitted: session.status === "joined",
+    voice: deps.voice,
+  };
 }

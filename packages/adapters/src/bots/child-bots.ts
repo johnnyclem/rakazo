@@ -46,6 +46,7 @@ import { toComputerRef } from "../computers/screens/computer-support.js";
 import type { MeetingService } from "../meetings/meeting-service.js";
 import { purgeClearedConversationMemory } from "../memory/conversation-memory-cleanup.js";
 import type { MemoryProviderResolver } from "../memory/memory-provider-factory.js";
+import { pausedBotError } from "../messaging/bot-messages.js";
 import { wakeRun } from "../runs/wakeups/wake-run.js";
 import { removePiBotSessions } from "../runtime/pi/pi-session.js";
 import { forgetPageShareSecrets } from "../secrets/vault/page-share-secrets.js";
@@ -84,6 +85,12 @@ export async function spawnBot(
 ) {
   const name = input.name.trim();
   if (!name) return { error: "Bot name is required." };
+  // A run still in flight after a pause must not start work in a bot the pause does not cover.
+  const spawner = await deps.prisma.bot.findUnique({
+    where: { id: input.spawnedBy.id },
+    select: { pausedAt: true },
+  });
+  if (spawner?.pausedAt) return { error: pausedBotError(input.spawnedBy.name) };
 
   const actor: Actor = {
     userId: input.spawnedBy.userId,

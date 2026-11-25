@@ -62,22 +62,27 @@ cancelled for waiting. Stop still cancels held runs, and a message that arrives
 with no run under way still queues its follow-up, held like the rest.
 
 `fleet.resume` clears the pause, counts each held run's wait from that moment, and
-wakes each one once with `wakeRun`, keeping any wake time a run already had. Archiving
-a bot clears its pause. Duplicating a bot and exporting or importing an account do
+wakes each one once with `wakeRun`, keeping any wake time a run already had. It also
+asks for what nothing else would start again: the decision on each team-chat room's
+waiting ambient messages, and a sync of each calendar whose rules pick a resumed bot.
+Archiving a bot clears its pause. Duplicating a bot and exporting or importing an account do
 not carry it.
 
 Work a paused bot would start on its own is skipped or refused instead of held. A
 recurring or watching routine skips its occurrence and schedules the next, while a
 one-time routine becomes a held run, as does a ticket assigned to the bot. The daily
 check-in creates no run.
-`message_bot`, `handoff_to_bot` and a message to a connected agent answer "{name} is
-paused." and create nothing; `post_to_group` is unchanged. Picking up the bot's call and
+`message_bot`, `handoff_to_bot`, `spawn_bot` and a message to a connected agent answer
+"{name} is paused." and create nothing, so a run still in flight cannot start work in a
+bot the pause does not cover; `post_to_group` is unchanged. Picking up the bot's call and
 joining a meeting answer 409 with the code `bot_paused`. A calendar sync books no
 meeting for a paused bot and cancels the bookings it already made, and a join that was
-waiting to retry when the pause landed fails. A team-chat room's waiting ambient messages
-are ignored while the bot is paused, with no judge call. A paused bot's queued runs
-are left out of the activity list, and its status reads `paused`, or `pausing` while a
-run is still going.
+waiting to retry when the pause landed fails, and is not retried at the resume. A
+meeting the bot is already in stops answering participants while it is paused and
+answers again after the resume. A team-chat room's waiting ambient messages are neither
+judged nor ignored while the bot is paused: they wait for the resume. A paused bot's
+queued runs are left out of the activity list and of the live status card, and its status
+reads `paused`, or `pausing` while a run is still going.
 
 A run already working when its bot is paused yields instead of being cut off. Each
 60-second lease heartbeat also reads `bots.pausedAt`; once it is set, the turn ends
@@ -86,7 +91,11 @@ saved with its checkpoint, the run returns to `queued`, and the claim gate holds
 After the resume the next claim continues with the next model call, so no step repeats.
 Detection takes up to one heartbeat, and the turn then ends only after the step in
 progress. One long model stream or tool call is not interrupted, and a runtime that
-cannot yield finishes its turn before the gate stops the next one. A failed read of the
+cannot yield finishes its turn before the gate stops the next one. A shell command that
+outlived its tool wait also keeps the turn going: its output reaches only this attempt,
+so the turn runs on until the command exits, at the latest at its own timeout, and
+hands the run back after reading the output. When the yield lands, clients are told to read the roster and the
+activity list again. A failed read of the
 pause is retried at the next heartbeat. Runs waiting for an answer or a takeover are
 left as they are, and the bot's computer keeps running: the yielded run gives up only its
 execution lease, as any requeued run does.

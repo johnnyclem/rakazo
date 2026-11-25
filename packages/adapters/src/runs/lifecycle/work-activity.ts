@@ -493,7 +493,12 @@ export class WorkActivities {
   ): Promise<{ state: WorkActivityState; since?: Date; newest?: Date }> {
     const runs = await runAsSystem("read a user's work in progress", () =>
       this.prisma.run.findMany({
-        where: { userId, status: { in: [...ACTIVE_RUN_STATUSES] } },
+        where: {
+          userId,
+          status: { in: [...ACTIVE_RUN_STATUSES] },
+          // A run a pause holds is waiting for the resume, not a bot at work.
+          NOT: { status: "queued", bot: { pausedAt: { not: null } } },
+        },
         orderBy: { createdAt: "desc" },
         select: {
           id: true,

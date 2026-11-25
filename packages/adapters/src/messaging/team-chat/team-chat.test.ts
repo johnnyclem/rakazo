@@ -819,15 +819,17 @@ describe("TeamChat.ambientJob", () => {
     },
   );
 
-  it("makes no judge call for a paused bot and ignores what it would have judged", async () => {
+  it("makes no judge call for a paused bot and holds what it would have judged", async () => {
     const chat = setup({ bot: { pausedAt: new Date() } });
     const message = chat.ambient();
 
     await chat.teamChat.ambientJob(chat.conversation.id);
 
     expect(chat.decide).not.toHaveBeenCalled();
-    expect(chat.row(message.id)).toMatchObject({ status: "ignored" });
+    expect(chat.row(message.id)).toMatchObject({ status: "observed" });
     expect(chat.runSends()).toEqual([]);
+    // Nothing is queued to look again: the resume asks for the decision.
+    expect(chat.jobs.size).toBe(0);
   });
 
   it("starts one run for the message the judge picks, with the rest as its context", async () => {

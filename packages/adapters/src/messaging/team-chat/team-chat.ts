@@ -365,6 +365,7 @@ export class TeamChat {
    * One conversation's ambient decision over its unanswered messages, a batch at a time. A digest
    * sender's messages stay out of the batch until its period passes, so they never hold up anything
    * behind them. Where the bot no longer answers, every waiting message is ignored, digests too.
+   * A paused bot's messages wait for the resume.
    */
   async ambientJob(conversationId: string): Promise<void> {
     await runAsSystem("decide on ambient team-chat messages", async () => {
@@ -375,12 +376,13 @@ export class TeamChat {
       if (!conversation) return;
       const now = new Date();
       const available = await this.available(conversation);
-      // An archived or paused bot judges and answers nothing; its waiting messages are ignored.
+      // An archived bot answers nothing more.
       const bot = available
         ? await this.deps.prisma.bot.findFirst({
-            where: { id: conversation.botId, archivedAt: null, pausedAt: null },
+            where: { id: conversation.botId, archivedAt: null },
             select: {
               id: true,
+              pausedAt: true,
               spaceId: true,
               userId: true,
               name: true,
@@ -391,6 +393,8 @@ export class TeamChat {
             },
           })
         : null;
+      // A paused bot judges nothing and its waiting messages stay for the resume to decide on.
+      if (bot?.pausedAt) return;
       const policy =
         bot && (conversation.teamChatAmbientEnabled ?? bot.teamChatAmbientEnabled) ? bot : null;
       const parsedPolicies = AutomatedSenderPoliciesSchema.safeParse(

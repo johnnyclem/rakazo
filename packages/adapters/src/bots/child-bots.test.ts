@@ -147,7 +147,9 @@ describe("spawned bot creation", () => {
 
     const result = await spawnBot(
       {
-        prisma: {} as PrismaClient,
+        prisma: {
+          bot: { findUnique: vi.fn().mockResolvedValue({ pausedAt: null }) },
+        } as unknown as PrismaClient,
         jobs: { enqueue: vi.fn() } as unknown as JobPublisher,
       },
       {

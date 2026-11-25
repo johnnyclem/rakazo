@@ -87,12 +87,16 @@ describePostgres("pausing and resuming bots (PostgreSQL)", () => {
     await system.run.deleteMany({ where: { spaceId: identity.spaceId } });
     await system.task.deleteMany({ where: { spaceId: identity.spaceId } });
     await system.chatGroup.deleteMany({ where: { spaceId: identity.spaceId } });
+    await system.meetingCalendarConnection.deleteMany({ where: { spaceId: identity.spaceId } });
+    await system.externalConversation.deleteMany({ where: { spaceId: identity.spaceId } });
     await system.bot.deleteMany({
       where: { spaceId: identity.spaceId, id: { not: identity.botId } },
     });
     await system.bot.updateMany({ data: { pausedAt: null } });
   });
   afterAll(async () => {
+    if (identity)
+      await system.meetingCalendarConnection.deleteMany({ where: { spaceId: identity.spaceId } });
     for (const [who, id] of [
       [address, identity],
       [strangerAddress, stranger],
@@ -170,6 +174,67 @@ describePostgres("pausing and resuming bots (PostgreSQL)", () => {
       jobs.flatMap((job) => (job.name === "run.continue" ? [job.payload.runId] : [])).sort(),
     ).toEqual([held.id, second.id].sort());
     expect(jobs.every((job) => job.keepExisting === true)).toBe(true);
+  });
+
+  it("asks for the decision on a room's waiting ambient messages at the resume", async () => {
+    const quiet = await newBot("Quiet");
+    const room = (botId: string, key: string, status: string) =>
+      system.externalConversation.create({
+        data: {
+          provider: "slack",
+          workspaceId: key,
+          externalKey: key,
+          conversationId: key,
+          spaceId: identity.spaceId,
+          botId,
+          userId: identity.userId,
+          messages: {
+            create: {
+              providerEventId: key,
+              senderId: "u1",
+              senderName: "Pat",
+              content: "hi",
+              kind: "ambient",
+              status,
+            },
+          },
+        },
+      });
+    const waiting = await room(identity.botId, "waiting", "observed");
+    await room(identity.botId, "answered", "delivered");
+    await room(quiet, "other-bot", "observed");
+    await pause({ kind: "bot", botId: identity.botId });
+
+    await resume({ kind: "bot", botId: identity.botId });
+
+    expect(
+      jobs.flatMap((job) => (job.name === "team_chat.ambient" ? [job.payload.conversationId] : [])),
+    ).toEqual([waiting.id]);
+  });
+
+  it("syncs the calendars whose rules pick a resumed bot", async () => {
+    const other = await newBot("Other");
+    const connection = (botId: string, id: string) =>
+      system.meetingCalendarConnection.create({
+        data: {
+          id,
+          spaceId: identity.spaceId,
+          userId: id,
+          provider: "test",
+          rules: { create: { scope: "all", targetId: "all", botId } },
+        },
+      });
+    const picked = await connection(identity.botId, `cal-${randomUUID()}`);
+    await connection(other, `cal-${randomUUID()}`);
+    await pause({ kind: "space" });
+
+    await resume({ kind: "bot", botId: identity.botId });
+
+    expect(
+      jobs.flatMap((job) =>
+        job.name === "meeting.calendar-sync" ? [job.payload.connectionId] : [],
+      ),
+    ).toEqual([picked.id]);
   });
 
   it("wakes nothing when no bot was paused", async () => {

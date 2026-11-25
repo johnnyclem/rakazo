@@ -335,7 +335,10 @@ describePostgres("a run in flight when its bot is paused (PostgreSQL)", () => {
 
     await wait(async () => expect((await runRow(run.id)).status).toBe("queued"));
     expect(await runRow(run.id)).toMatchObject({ error: null, leaseOwner: null });
-    expect(await attemptsOf(run.id)).toEqual([{ fence: 1, status: "interrupted" }]);
+    // The attempt is closed just after the run is queued.
+    await wait(async () =>
+      expect(await attemptsOf(run.id)).toEqual([{ fence: 1, status: "interrupted" }]),
+    );
     expect(await savedTurns(run.id)).toBe(1);
     const saved = await runAsSystem("run pause fixture", () => loadRunTurnCheckpoint(prisma, run));
     expect((JSON.parse(saved!) as TurnCheckpoint).messages).toHaveLength(1);
@@ -361,6 +364,27 @@ describePostgres("a run in flight when its bot is paused (PostgreSQL)", () => {
     ]);
     expect(await system.message.count({ where: { runId: run.id, role: "bot" } })).toBe(1);
     expect(await savedTurns(run.id)).toBe(0);
+  });
+
+  it("tells apps to read again once the yield has queued the run", async () => {
+    const aMinutePasses = leaseHeartbeats();
+    const { createRun, botId, actor } = await seedBot();
+    const run = await createRun();
+    const worker = startProcess("worker", { yields: true });
+    await worker.start();
+    const first = await runInFlight(worker, run);
+    await pause(actor, botId);
+    aMinutePasses();
+    await wait(() => expect(first.yieldSignal?.aborted).toBe(true));
+    const published = vi.spyOn(realtime, "publish");
+
+    first.finish.resolve();
+    await wait(async () => expect((await runRow(run.id)).status).toBe("queued"));
+
+    await wait(() => {
+      expect(published).toHaveBeenCalledWith(`space-changes:${actor.spaceId}`, "runs");
+      expect(published).toHaveBeenCalledWith(`roster-space:${actor.spaceId}`, "");
+    });
   });
 
   it("lets a runtime that ignores the yield signal finish its turn, and holds the bot's next run", async () => {
