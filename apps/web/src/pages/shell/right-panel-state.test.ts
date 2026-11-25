@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readRightPanelState,
   rightPanelStorageKey,
+  sidePanelOpen,
   writeRightPanelState,
 } from "./right-panel-state";
 
@@ -64,5 +65,12 @@ describe("right panel preferences", () => {
     writeRightPanelState(key, "settings");
     writeRightPanelState(key, "create-group");
     expect(readRightPanelState(key)).toEqual({ panel: "settings" });
+  });
+  it("opens the new group form with no chat and every other panel only beside one", () => {
+    expect(sidePanelOpen("create-group", false)).toBe(true);
+    expect(sidePanelOpen("settings", false)).toBe(false);
+    expect(sidePanelOpen("group-settings", false)).toBe(false);
+    expect(sidePanelOpen("settings", true)).toBe(true);
+    expect(sidePanelOpen(null, true)).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ import { CreateGroupForm, GroupSettings } from "../space/GroupPanel";
 import { BotSettings } from "./bots/bot-panel";
 import { ResizableSidePanel } from "./resizable-side-panel";
 import type { Panel } from "./right-panel-state";
+import { sidePanelOpen } from "./right-panel-state";
 import { firstThreadRoute } from "./use-shell-navigation";
 
 /** The panel beside the chat: a bot, a routine, a group, or an import. */
@@ -63,7 +64,7 @@ export function ShellSidePanel({
   onOverlays: (overlays: boolean) => void;
 }) {
   const { t } = useLingui();
-  const open = Boolean(panel && (active || activeGroup));
+  const open = sidePanelOpen(panel, Boolean(active || activeGroup));
   const botView = panel === "routines" || panel === "pages" || panel === "settings" ? panel : null;
 
   async function createGroup(input: { name: string; botIds: string[] }) {

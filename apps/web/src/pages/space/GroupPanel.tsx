@@ -1,6 +1,11 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { Bot, Group } from "@rakazo/contracts";
-import { GROUP_MEMBER_MAX, GROUP_MEMBER_MIN, GROUP_NAME_MAX_LENGTH } from "@rakazo/contracts";
+import {
+  defaultGroupName,
+  GROUP_MEMBER_MAX,
+  GROUP_MEMBER_MIN,
+  GROUP_NAME_MAX_LENGTH,
+} from "@rakazo/contracts";
 import { BotAvatar, Button, Checkbox, Input, SectionHeading } from "@rakazo/ui-web";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
@@ -9,12 +14,8 @@ import { errorText } from "../../lib/query/user-error";
 import { useEventListener } from "../../lib/use-event-listener";
 import { DeleteItemDialog } from "../shell/create-delete-dialogs";
 
-function validSelection(name: string, selected: readonly string[]) {
-  return (
-    Boolean(name.trim()) &&
-    selected.length >= GROUP_MEMBER_MIN &&
-    selected.length <= GROUP_MEMBER_MAX
-  );
+function validMembers(selected: readonly string[]) {
+  return selected.length >= GROUP_MEMBER_MIN && selected.length <= GROUP_MEMBER_MAX;
 }
 
 function sameMembers(left: readonly string[], right: readonly string[]) {
@@ -162,11 +163,12 @@ export function CreateGroupForm({
   const [error, setError] = useState<string | null>(null);
 
   async function create() {
-    if (submitting || !validSelection(name, selected)) return;
+    if (submitting || !validMembers(selected)) return;
     setSubmitting(true);
     setError(null);
     try {
-      await onCreate({ name: name.trim(), botIds: selected });
+      const pickedNames = selected.flatMap((id) => bots.find((bot) => bot.id === id)?.name ?? []);
+      await onCreate({ name: name.trim() || defaultGroupName(pickedNames), botIds: selected });
     } catch (cause) {
       setError(errorText(cause, t`Could not create group`));
     } finally {
@@ -215,7 +217,7 @@ export function CreateGroupForm({
       />
       <Button
         className="mt-5 w-full"
-        disabled={submitting || !validSelection(name, selected)}
+        disabled={submitting || !validMembers(selected)}
         onClick={() => void create()}
       >
         {submitting ? <Trans>Creating…</Trans> : <Trans>Create group</Trans>}
@@ -345,7 +347,7 @@ export function GroupSettings({
       <MemberPicker bots={bots} selected={selected} onChange={setSelected} onOpenBot={onOpenBot} />
       <Button
         className="mt-5 w-full"
-        disabled={saving || !validSelection(name, selected)}
+        disabled={saving || !name.trim() || !validMembers(selected)}
         onClick={() => void save()}
       >
         {saving ? <Trans>Saving…</Trans> : <Trans>Save</Trans>}

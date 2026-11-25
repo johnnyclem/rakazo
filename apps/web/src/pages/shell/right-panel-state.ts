@@ -8,6 +8,11 @@ export type Panel =
   | null;
 export type RightPanelState = { panel: Panel; routineId?: string };
 
+/** Every panel opens beside a chat; the new group form also opens with none. */
+export function sidePanelOpen(panel: Panel, hasChat: boolean): boolean {
+  return panel !== null && (hasChat || panel === "create-group");
+}
+
 /** Panels that are safe to remember across reloads. */
 const durablePanels: readonly (string | null)[] = [
   "computer",

@@ -52,7 +52,7 @@ vi.mock("@rakazo/ui-web", async (importOriginal) => {
   };
 });
 
-import { GroupSettings } from "./GroupPanel";
+import { CreateGroupForm, GroupSettings } from "./GroupPanel";
 
 const group: Group = {
   id: "group-1",
@@ -371,5 +371,59 @@ describe("GroupSettings", () => {
         .querySelector('[role="checkbox"][aria-label="Remove Researcher from the group"]')
         ?.getAttribute("aria-checked"),
     ).toBe("true");
+  });
+});
+
+describe("CreateGroupForm", () => {
+  async function renderCreate() {
+    const onCreate = vi.fn(async () => undefined);
+    await act(async () => {
+      root.render(<CreateGroupForm bots={bots} onCancel={() => undefined} onCreate={onCreate} />);
+    });
+    return onCreate;
+  }
+
+  async function pick(botName: string) {
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>(`[role="checkbox"][aria-label="Add ${botName} to the group"]`)!
+        .click();
+    });
+  }
+
+  it("names a group after its members in pick order when the name is left blank", async () => {
+    const onCreate = await renderCreate();
+    await pick("Writer");
+    await pick("Researcher");
+    await click("Create group");
+    expect(onCreate).toHaveBeenCalledWith({
+      name: "Writer, Researcher",
+      botIds: ["bot-2", "bot-1"],
+    });
+  });
+
+  it("keeps a typed name", async () => {
+    const onCreate = await renderCreate();
+    const name = container.querySelector<HTMLInputElement>("input")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        name,
+        "  Draft team ",
+      );
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await pick("Researcher");
+    await pick("Writer");
+    await click("Create group");
+    expect(onCreate).toHaveBeenCalledWith({ name: "Draft team", botIds: ["bot-1", "bot-2"] });
+  });
+
+  it("stays disabled until two bots are picked", async () => {
+    await renderCreate();
+    expect(button("Create group").disabled).toBe(true);
+    await pick("Researcher");
+    expect(button("Create group").disabled).toBe(true);
+    await pick("Writer");
+    expect(button("Create group").disabled).toBe(false);
   });
 });

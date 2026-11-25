@@ -336,6 +336,27 @@ test("create group from + and see two bots in one transcript", async ({ page }, 
   await expect(page.getByRole("combobox", { name: /Message/ })).toBeVisible();
 });
 
+test("a group left unnamed takes its members' names", async ({ page }) => {
+  const stamp = Date.now();
+  await signup(page, `group-blank-${stamp}@rakazo.test`, "password12", "Group Blank E2E");
+  await completeOnboarding(page);
+  await page.goto("/app");
+  await page.waitForURL(/\/app\/[^/]+$/);
+
+  await createBot(page, "Researcher");
+  await createBot(page, "Research Writer");
+
+  await openNewGroup(page);
+  const panel = page.getByTestId("side-panel");
+  await panel.getByRole("checkbox", { name: "Add Research Writer to the group" }).click();
+  await panel.getByRole("checkbox", { name: "Add Researcher to the group" }).click();
+  await page.getByRole("button", { name: "Create group", exact: true }).click();
+  await page.waitForURL(/\/app\/g\/[^/]+$/);
+  await expect(
+    page.getByRole("combobox", { name: "Message Research Writer, Researcher" }),
+  ).toBeVisible();
+});
+
 test("subagents keep group approvals answerable across reload while conversation continues", async ({
   page,
 }, testInfo) => {

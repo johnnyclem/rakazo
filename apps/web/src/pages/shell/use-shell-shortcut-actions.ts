@@ -149,8 +149,8 @@ export function useShellShortcutActions({
       if (hasOpenDialog(document, true)) return false;
       switch (shortcut.type) {
         case "new-group":
-          // A space without bots has nobody to add, and the side panel needs a chat to open in.
-          if (!active && !activeGroup) return false;
+          // A space without bots has nobody to add.
+          if (!bots.some((bot) => !bot.archivedAt)) return false;
           setPanel("create-group");
           return true;
         case "integrations":
