@@ -16,7 +16,7 @@ import {
   runAsSystem,
   THREAD_LOCK_TRANSACTION_OPTIONS,
 } from "@rakazo/db";
-import { currentBotMessageHop } from "../messaging/bot-messages.js";
+import { currentBotMessageHop, pausedBotError } from "../messaging/bot-messages.js";
 import type { MessagingDelivery } from "../messaging/messaging-delivery.js";
 import { runLeaseFor } from "../runs/assembly/run-messages.js";
 import type { ExecutorDeps } from "../runs/executor/executor-deps.js";
@@ -336,11 +336,18 @@ async function deliverToConnectedAgent(
 
   const target = await deps.prisma.bot.findUnique({
     where: { id: targetIdentity.botId },
-    select: { id: true, name: true, archivedAt: true, thread: { select: { id: true } } },
+    select: {
+      id: true,
+      name: true,
+      archivedAt: true,
+      pausedAt: true,
+      thread: { select: { id: true } },
+    },
   });
   if (!target || target.archivedAt || !target.thread) {
     return { ok: false, error: "that agent is not available" };
   }
+  if (target.pausedAt) return { ok: false, error: pausedBotError(target.name) };
   const targetThreadId = target.thread.id;
   const deliveryKey = input.deliveryKey ? `agent-message:${input.deliveryKey}` : undefined;
   const wakePrompt = buildBotMessageWakePrompt({ from: sender, text: message });
@@ -360,6 +367,13 @@ async function deliverToConnectedAgent(
       }
       if (!(await crossSpaceCommunicationAllowed(tx, sender.id, target.id))) {
         return { ok: false as const, error: "no agent can be reached at that address" };
+      }
+      const stillRunnable = await tx.bot.findFirst({
+        where: { id: target.id },
+        select: { pausedAt: true },
+      });
+      if (stillRunnable?.pausedAt) {
+        return { ok: false as const, error: pausedBotError(target.name) };
       }
       const senderStillRunning = await tx.run.findFirst({
         where: { id: run.id, status: "running" },

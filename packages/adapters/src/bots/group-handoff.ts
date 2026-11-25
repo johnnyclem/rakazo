@@ -18,6 +18,7 @@ import {
   THREAD_LOCK_TRANSACTION_OPTIONS,
   touchGroupUpdatedAt,
 } from "@rakazo/db";
+import { pausedBotError } from "../messaging/bot-messages.js";
 import { runLeaseFor } from "../runs/assembly/run-messages.js";
 import type { ExecutorDeps } from "../runs/executor/executor-deps.js";
 import { wakeRun } from "../runs/wakeups/wake-run.js";
@@ -60,7 +61,7 @@ export async function handoffToGroupBot(
         thread: { select: { id: true } },
         members: {
           where: { bot: { archivedAt: null } },
-          include: { bot: { select: { id: true, name: true } } },
+          include: { bot: { select: { id: true, name: true, pausedAt: true } } },
           orderBy: { createdAt: "asc" },
         },
       },
@@ -141,6 +142,8 @@ export async function handoffToGroupBot(
     if (!target) return { error: "handoff target is not a group member" } as const;
     const targetId = target.id;
     if (targetId === run.botId) return { error: "cannot hand off to yourself" } as const;
+    // Read with the group locked, so a pause that lands later only holds the run it creates.
+    if (target.pausedAt) return { error: pausedBotError(target.name) } as const;
 
     let sourceBlocks: MessageBlock[] = [];
     if (activeSource.sourceMessage) {

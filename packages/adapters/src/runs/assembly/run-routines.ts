@@ -140,6 +140,34 @@ function nextScheduledRunAt(
     : nextRoutineRunDateAcross(routine.crons, scheduledAt, new Date(Date.now()), routine.timezone);
 }
 
+/**
+ * Moves a routine past `scheduledAt` without a run. A watch that no longer parses keeps the
+ * default interval, so the normal path reports it once the skip ends.
+ */
+async function skipOccurrence(
+  deps: ExecutorDeps,
+  routine: {
+    id: string;
+    crons: string[];
+    timezone: string;
+    watch: unknown;
+  },
+  scheduledAt: Date,
+) {
+  const nextRunAt =
+    routine.watch == null
+      ? nextScheduledRunAt(routine, scheduledAt)
+      : nextRoutineWatchAt(
+          parseRoutineWatch(routine.watch) ?? { everyMinutes: ROUTINE_WATCH_DEFAULT_MINUTES },
+          new Date(Math.max(Date.now(), scheduledAt.getTime())),
+        );
+  const skipped = await deps.prisma.routine.updateMany({
+    where: { id: routine.id, active: true, nextRunAt: scheduledAt },
+    data: { nextRunAt, ...(nextRunAt ? {} : { active: false }) },
+  });
+  if (skipped.count && nextRunAt) await deps.jobs.enqueue(routineWakeupJob(routine.id, nextRunAt));
+}
+
 export async function wakeRoutine(deps: ExecutorDeps, routineId: string, scheduledFor: string) {
   const scheduledAt = new Date(scheduledFor);
   if (!Number.isFinite(scheduledAt.getTime())) return;
@@ -162,21 +190,8 @@ export async function wakeRoutine(deps: ExecutorDeps, routineId: string, schedul
   if (await accountDeactivated(deps.prisma, routine.userId)) {
     // A deactivated owner's routine skips this occurrence without running. A recurring or
     // watching one keeps its schedule, so it runs again once the owner is back; a one-time
-    // one is spent. A watch that no longer parses keeps the default interval, so the normal
-    // path reports it once the owner is back.
-    const nextRunAt =
-      routine.watch == null
-        ? nextScheduledRunAt(routine, scheduledAt)
-        : nextRoutineWatchAt(
-            parseRoutineWatch(routine.watch) ?? { everyMinutes: ROUTINE_WATCH_DEFAULT_MINUTES },
-            new Date(Math.max(Date.now(), scheduledAt.getTime())),
-          );
-    const skipped = await deps.prisma.routine.updateMany({
-      where: { id: routine.id, active: true, nextRunAt: scheduledAt },
-      data: { nextRunAt, ...(nextRunAt ? {} : { active: false }) },
-    });
-    if (skipped.count && nextRunAt)
-      await deps.jobs.enqueue(routineWakeupJob(routine.id, nextRunAt));
+    // one is spent.
+    await skipOccurrence(deps, routine, scheduledAt);
     return;
   }
   const bot = await deps.prisma.bot.findUnique({
@@ -192,6 +207,12 @@ export async function wakeRoutine(deps: ExecutorDeps, routineId: string, schedul
     return;
   }
   if (!bot?.thread) return;
+  // A paused bot skips a recurring or watching occurrence; a one-time one has no later turn,
+  // so it becomes a run that waits for the resume.
+  if (bot.pausedAt && (routine.watch != null || !isOneShotRoutineCrons(routine.crons))) {
+    await skipOccurrence(deps, routine, scheduledAt);
+    return;
+  }
   const targetThreadId = await routineGroupThreadId(deps.prisma, routine, bot.id);
   const thread = targetThreadId ? { id: targetThreadId } : bot.thread;
   // A change trigger checks first, without a model; only news becomes a run.

@@ -66,6 +66,15 @@ wakes each one once with `wakeRun`, keeping any wake time a run already had. Arc
 a bot clears its pause. Duplicating a bot and exporting or importing an account do
 not carry it.
 
+Work a paused bot would start on its own is skipped or refused instead of held. A
+recurring or watching routine skips its occurrence and schedules the next, while a
+one-time routine becomes a held run. The daily check-in and ticket wake create no run.
+`message_bot`, `handoff_to_bot` and a message to a connected agent answer "{name} is
+paused." and create nothing; `post_to_group` is unchanged. Picking up the bot's call and
+joining a meeting answer 409 with the code `bot_paused`. A paused bot's queued runs
+are left out of the activity list, and its status reads `paused`, or `pausing` while a
+run is still going.
+
 Graphile remains responsible for scheduled and maintenance jobs. Those jobs can
 create runs, which use the same direct dispatch path. Legacy run deliveries remain
 supported during rolling upgrades and drain safely against the same database

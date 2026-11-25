@@ -69,6 +69,11 @@ export async function loadBotMessageContext(
   return { ...context, repliesToRequest };
 }
 
+/** The tool error for a message to a bot that is paused: it starts nothing until resumed. */
+export function pausedBotError(name: string): string {
+  return `${name} is paused.`;
+}
+
 /** Bots named in a resolution error; a large Space must not turn one tool result into a wall. */
 const REACHABLE_BOTS_MAX = 12;
 
@@ -130,7 +135,7 @@ export async function messageBot(
 
   const candidates = await deps.prisma.bot.findMany({
     where: { spaceId: run.spaceId, archivedAt: null },
-    select: { id: true, name: true, thread: { select: { id: true } } },
+    select: { id: true, name: true, pausedAt: true, thread: { select: { id: true } } },
   });
   const target = resolveBotAddress(candidates, {
     botId: input.bot_id,
@@ -142,6 +147,7 @@ export async function messageBot(
   if (target.id === sender.id) return { ok: false as const, error: "a bot cannot message itself" };
   if (!target.thread)
     return { ok: false as const, error: `${target.name} has no chat to deliver to` };
+  if (target.pausedAt) return { ok: false as const, error: pausedBotError(target.name) };
   const returnFrom = options?.returnFrom;
   const returnsToSender =
     returnFrom !== undefined &&
@@ -243,10 +249,12 @@ export async function messageBot(
             spaceId: run.spaceId,
             archivedAt: null,
           },
-          select: { id: true },
+          select: { id: true, pausedAt: true },
         });
         if (!stillAddressable)
           return { ok: false as const, error: `${target.name} is no longer available` };
+        if (stillAddressable.pausedAt)
+          return { ok: false as const, error: pausedBotError(target.name) };
 
         // Echo into the sender's chat in the same transaction so a failed notify
         // cannot leave one side delivered and the other blank.

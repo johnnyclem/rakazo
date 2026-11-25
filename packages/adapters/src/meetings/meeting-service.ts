@@ -117,6 +117,7 @@ export class MeetingService {
   async join(actor: Actor, botId: string, input: string, shareTranscript = false) {
     this.requireEnabled(actor.spaceId);
     const bot = await this.bot(actor, botId);
+    if (bot.pausedAt) throw new ClientError("CONFLICT", `${bot.name} is paused.`, "bot_paused");
     const meeting = parseMeetingUrl(input);
     if (!this.provider().describe().capabilities.platforms.includes(meeting.platform)) {
       throw new ClientError("BAD_REQUEST", "This meeting platform is unavailable.");
@@ -684,7 +685,7 @@ export class MeetingService {
   private async bot(actor: Actor, botId: string) {
     const bot = await this.deps.prisma.bot.findFirst({
       where: { id: botId, spaceId: actor.spaceId, archivedAt: null },
-      select: { id: true, name: true },
+      select: { id: true, name: true, pausedAt: true },
     });
     if (!bot) throw new ClientError("NOT_FOUND", "Bot not found.");
     return bot;

@@ -526,6 +526,10 @@ export function threadsRoutes(ctx: RouterContext) {
       answerCall: callsEnabled.threads.answerCall.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         if (target.kind !== "bot") throw new IsolationError();
+        // Its turns on the call would wait for the resume, so the call stays ringing.
+        if (target.bot.pausedAt) {
+          throw new ClientError("CONFLICT", `${target.bot.name} is paused.`, "bot_paused");
+        }
         const answered = await settleCallRequest(deps, {
           threadId: target.threadId,
           callId: input.callId,

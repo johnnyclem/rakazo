@@ -88,6 +88,8 @@ export async function listSpaceRuns(
       bot: { archivedAt: null },
       trigger: { notIn: [...ACTIVITY_HIDDEN_TRIGGERS] },
       status: { in: statuses },
+      // A paused bot's queued runs wait for the resume; they are not activity yet.
+      NOT: { status: "queued", bot: { pausedAt: { not: null } } },
       ...(filter === "recent"
         ? { id: { in: await latestFinishedRunPerChat(prisma, actor, statuses) } }
         : {}),

@@ -15,8 +15,8 @@ import { withNewestThreadMessages } from "../threads/preview-messages.js";
 import {
   activeRunSelection,
   activeRunStatuses,
+  botStatus,
   previewFromBlocks,
-  primaryActiveRun,
 } from "../threads/thread-listing.js";
 import { readStateFor, snoozedUntilFor, unreadFor } from "../threads/thread-reads.js";
 import { lockSpaceForContentCreation } from "./spaces.js";
@@ -42,6 +42,7 @@ type GroupRecord = {
       name: string;
       color: string;
       avatarSet?: string;
+      pausedAt?: Date | null;
       runs: Array<{ status: string }>;
     } | null;
   }>;
@@ -68,7 +69,7 @@ function mapGroupMembers(members: GroupRecord["members"]): GroupMember[] {
     name: bot.name,
     color: bot.color,
     avatarSet: resolveBotAvatarSet(bot.avatarSet),
-    status: primaryActiveRun(bot.runs)?.status ?? "idle",
+    status: botStatus(bot.runs, bot.pausedAt),
   }));
 }
 
@@ -170,6 +171,7 @@ const groupMembersInclude = {
         name: true,
         color: true,
         avatarSet: true,
+        pausedAt: true,
         runs: activeRunSelection,
       },
     },

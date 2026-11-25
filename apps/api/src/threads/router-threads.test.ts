@@ -594,7 +594,7 @@ describe("threads.answerCall and threads.declineCall", () => {
       email: "user@rakazo.test",
       isDeploymentOwner: true,
     } satisfies Actor;
-    const handler = new RPCHandler(createRouter(deps));
+    const handler = appHandler(deps);
     const call = (path: string, json: Record<string, unknown>) =>
       handle(
         handler,
@@ -625,6 +625,20 @@ describe("threads.answerCall and threads.declineCall", () => {
     const { call } = fixture("missed");
     const response = await call("answerCall", {});
     expect(response.status).toBe(409);
+  });
+
+  it("refuses to pick up a call for a paused bot and leaves it ringing", async () => {
+    const { call, prisma } = fixture();
+    vi.mocked(prisma.bot.findFirst).mockResolvedValue({
+      id: "bot-1",
+      pausedAt: new Date(),
+      thread: { id: "thread-1" },
+      computer: null,
+    } as never);
+    const response = await call("answerCall", {});
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ json: { code: "bot_paused" } });
+    expect(prisma.message.updateMany).not.toHaveBeenCalled();
   });
 
   it("marks a declined call without scheduling another", async () => {

@@ -1464,6 +1464,7 @@ describe("threadSnapshot", () => {
         findFirst: vi.fn().mockResolvedValue({ seq: 12 }),
         findMany: vi.fn().mockResolvedValue([]),
       },
+      bot: { findMany: vi.fn().mockResolvedValue([]) },
       run: { findMany: findManyRuns },
     };
     const prisma = {
@@ -1494,6 +1495,7 @@ describe("threadSnapshot", () => {
         botId: { in: ["bot-a", "bot-b"] },
         status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
         trigger: { notIn: ["tickets", "helper"] },
+        NOT: { status: "queued", bot: { pausedAt: { not: null } } },
       },
       orderBy: { createdAt: "desc" },
       select: { botId: true, status: true },
@@ -1656,6 +1658,7 @@ function groupPrisma(findManyRuns: ReturnType<typeof groupRunFindMany>) {
       findFirst: vi.fn().mockResolvedValue(null),
       findMany: vi.fn().mockResolvedValue([]),
     },
+    bot: { findMany: vi.fn().mockResolvedValue([]) },
     run: { findMany: findManyRuns },
   };
   return {
@@ -5115,6 +5118,7 @@ describe("helper snapshot settlement", () => {
             history.filter((event) => input.where.type.in.includes(event.type)),
           ),
         },
+        bot: { findMany: vi.fn().mockResolvedValue([]) },
         run: { findFirst: botRunFindFirst(runs), findMany: groupRunFindMany({ active: runs }) },
       };
       const prisma = {

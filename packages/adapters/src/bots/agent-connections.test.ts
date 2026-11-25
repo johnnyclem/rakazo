@@ -38,6 +38,8 @@ function createDeps(
     connection?: Record<string, unknown> | null;
     pendingConnection?: Record<string, unknown> | null;
     sourceHop?: number;
+    /** Simulates the target being paused after it was resolved. */
+    pausedInsideTx?: boolean;
     /** Simulates a revoke landing between the pre-check and the transaction. */
     connectionRevokedInsideTx?: boolean;
     /** Simulates a revoke landing after the in-transaction approval read. */
@@ -86,7 +88,12 @@ function createDeps(
       create: vi.fn(async ({ data }: { data: object }) => ({ id: "evt-1", seq: 8, ...data })),
     },
     thread: { update: vi.fn(async () => ({ nextMessageSeq: 4, nextEventSeq: 9 })) },
-    bot: { findFirst: vi.fn(async () => ({ id: "bot-2" })) },
+    bot: {
+      findFirst: vi.fn(async () => ({
+        id: "bot-2",
+        pausedAt: overrides.pausedInsideTx ? new Date() : null,
+      })),
+    },
     // What a `SELECT ... FOR UPDATE` on the connection row would see.
     $executeRaw: vi.fn(async () => 0),
     $queryRaw: vi.fn(async (query: TemplateStringsArray) => {
@@ -621,6 +628,23 @@ describe("messageConnectedAgent revocation locking", () => {
     );
     expect(deps.txCalls.messageCreate).toHaveLength(0);
     expect(deps.txCalls.taskCreate).toHaveLength(0);
+    expect(deps.txCalls.runCreate).toHaveLength(0);
+    expect(deps.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe("messageConnectedAgent to a paused agent", () => {
+  it("refuses a delivery when the target is paused before the transaction commits", async () => {
+    const deps = createDeps({
+      connection: { id: "ac-1", requesterBotId: "bot-1", targetBotId: "bot-2", status: "approved" },
+      pausedInsideTx: true,
+    });
+    const result = await messageConnectedAgent(deps, run, sender, {
+      address: "+15552222222",
+      message: "ready?",
+    });
+
+    expect(result).toEqual({ ok: false, error: "Helper is paused." });
     expect(deps.txCalls.runCreate).toHaveLength(0);
     expect(deps.enqueue).not.toHaveBeenCalled();
   });

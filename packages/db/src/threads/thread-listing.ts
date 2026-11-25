@@ -21,6 +21,8 @@ export const activeRunSelection = {
   where: {
     status: { in: activeRunStatuses },
     trigger: { notIn: statusHiddenRunTriggers },
+    // A paused bot's queued runs are held, not work in progress.
+    NOT: { status: "queued", bot: { pausedAt: { not: null } } },
   },
   orderBy: { createdAt: "desc" as const },
   select: { status: true, threadId: true },
@@ -36,20 +38,44 @@ export function primaryActiveRun<T extends { status: string }>(runs: readonly T[
   );
 }
 
-/** Each bot's status from its active runs in any thread; idle without one. */
+/**
+ * A bot's status from its active runs; idle without one. A paused bot reads paused, or pausing
+ * while a run is still going, unless it waits on a person, which a pause does not touch.
+ */
+export function botStatus(
+  runs: readonly { status: string }[],
+  pausedAt: Date | null | undefined,
+): string {
+  const status = primaryActiveRun(runs)?.status;
+  if (!pausedAt) return status ?? "idle";
+  if (status === "waiting_input" || status === "waiting_takeover") return status;
+  return status === "running" || status === "leased" ? "pausing" : "paused";
+}
+
+/** Each bot's status from its active runs in any thread. */
 export async function botRunStatuses(
-  prisma: Pick<PrismaClient, "run">,
+  prisma: Pick<PrismaClient, "run" | "bot">,
   botIds: string[],
 ): Promise<Map<string, string>> {
-  const runs = await prisma.run.findMany({
-    where: { botId: { in: botIds }, ...activeRunSelection.where },
-    orderBy: activeRunSelection.orderBy,
-    select: { botId: true, status: true },
-  });
+  const [runs, paused] = await Promise.all([
+    prisma.run.findMany({
+      where: { botId: { in: botIds }, ...activeRunSelection.where },
+      orderBy: activeRunSelection.orderBy,
+      select: { botId: true, status: true },
+    }),
+    prisma.bot.findMany({
+      where: { id: { in: botIds }, pausedAt: { not: null } },
+      select: { id: true, pausedAt: true },
+    }),
+  ]);
+  const pausedAt = new Map(paused.map((bot) => [bot.id, bot.pausedAt]));
   return new Map(
     botIds.map((botId) => [
       botId,
-      primaryActiveRun(runs.filter((run) => run.botId === botId))?.status ?? "idle",
+      botStatus(
+        runs.filter((run) => run.botId === botId),
+        pausedAt.get(botId),
+      ),
     ]),
   );
 }

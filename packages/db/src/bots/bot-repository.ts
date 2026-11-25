@@ -33,6 +33,7 @@ import { createThreadMessageInTransaction } from "../threads/messages.js";
 import { withNewestThreadMessages } from "../threads/preview-messages.js";
 import {
   activeRunSelection,
+  botStatus,
   previewFromBlocks,
   primaryActiveRun,
   threadRunStatus,
@@ -208,6 +209,7 @@ export function createRepos(
         sectionId: true,
         updatedAt: true,
         parentBotId: true,
+        pausedAt: true,
         thread: { select: { id: true, reads: readStateFor(userId) } },
         runs: activeRunSelection,
       },
@@ -231,7 +233,7 @@ export function createRepos(
         snoozedUntil: snoozedUntilFor(bot.thread),
         parentBotId: bot.parentBotId,
         preview: previewFromBlocks(bot.thread.messages[0]?.blocks),
-        status: activeRun?.status ?? "idle",
+        status: botStatus(bot.runs, bot.pausedAt),
         threadStatus: threadRunStatus(bot.runs, bot.thread.id),
         runErrorId: rosterRunErrorId(bot.thread.runs[0], activeRun),
         updatedAt: rosterUpdatedAt(bot.thread.messages[0], bot.updatedAt).toISOString(),
@@ -290,7 +292,7 @@ export function createRepos(
       const mapped = mapBot(
         bot,
         (threadId && previews.get(threadId)) || "",
-        activeRun?.status ?? "idle",
+        botStatus(bot.runs, bot.pausedAt),
         rosterRunErrorId(bot.thread?.runs[0], activeRun),
         (threadId && newestAt.get(threadId)) || bot.updatedAt,
         ringingCall(threadId && callsByThread.has(threadId) ? [callsByThread.get(threadId)!] : []),

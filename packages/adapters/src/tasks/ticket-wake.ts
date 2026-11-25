@@ -24,7 +24,8 @@ export async function wakeTicketAssignee(
     const status = TicketStatusSchema.safeParse(ticket.status);
     if (!status.success || isTicketCompletedStatus(status.data)) return null;
     const bot = await tx.bot.findFirst({
-      where: { id: input.botId, spaceId: input.spaceId, archivedAt: null },
+      // A paused bot starts no ticket work; the assignment stays on the board.
+      where: { id: input.botId, spaceId: input.spaceId, archivedAt: null, pausedAt: null },
       select: { id: true, userId: true, thread: { select: { id: true } } },
     });
     if (!bot?.thread) return null;

@@ -102,6 +102,8 @@ export async function parkForgottenOpenWork(deps: {
 function strategicBotEligibility(now: Date): Prisma.BotWhereInput {
   return {
     archivedAt: null,
+    // A paused bot starts nothing, check-ins included.
+    pausedAt: null,
     dailyCheckIns: true,
     space: { deletingAt: null },
     thread: { isNot: null },
